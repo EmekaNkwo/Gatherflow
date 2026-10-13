@@ -9,8 +9,12 @@ responsible for them, the welcome message gets drafted, the outcome of that conv
 what happens next, and their return visit, membership and group connection are all recorded
 against the same person.
 
-> **This is a frontend-only portfolio project.** There is no backend, no database and no real
-> messaging. All data is synthetic, generated in the browser and stored in `localStorage`.
+> **Runs browser-only by default.** Open it and a synthetic church is generated in the browser
+> and kept in `localStorage` — no account, no database, no setup, and no real messaging. A
+> Postgres backend with authentication and server-enforced authorization is implemented and
+> tested behind that default; see [Database](#database-postgres--groundwork) and
+> [Authentication](#authentication-and-real-authorization--groundwork). All data is synthetic
+> either way.
 
 ---
 
@@ -135,8 +139,9 @@ collections whose array reference changed are rewritten on each command.
 
 ### Database (Postgres) — groundwork
 
-> **The running application still uses `localStorage`.** The Postgres layer below is implemented
-> and tested, but the UI is not wired to it yet; that is the next step.
+> **The running application uses `localStorage` by default.** The Postgres layer below is
+> implemented and tested, and the interface reaches it through named commands — but `local` mode
+> stays the default so the demo needs no setup, and `remote` mode has no browser coverage yet.
 
 `StorageAdapter` is synchronous by design, so a network database cannot sit behind it. The seam
 for a database is one level up: `AsyncSnapshotRepository`, where the unit of work is a whole
