@@ -16,15 +16,35 @@ export function ChurchDataProvider({ children }: { children: ReactNode }) {
   const hydrateChurch = useChurchStore((state) => state.hydrate);
   const hydrateSession = useSessionStore((state) => state.hydrate);
   const ready = useChurchStore((state) => state.status === "ready" && state.snapshot !== null);
+  const loadError = useChurchStore((state) => state.loadError);
 
   useEffect(() => {
     hydrateSession();
-    hydrateChurch();
+    void hydrateChurch();
   }, [hydrateChurch, hydrateSession]);
+
+  // In server-backed mode the church may genuinely be unreachable. Saying so
+  // beats a skeleton that never resolves, and inventing an empty church would
+  // invite somebody to edit a fiction.
+  if (loadError) return <UnavailableShell message={loadError} />;
 
   if (!ready) return <LoadingShell />;
 
   return <>{children}</>;
+}
+
+function UnavailableShell({ message }: { message: string }) {
+  return (
+    <div className="w-full p-4 lg:p-6">
+      <div
+        role="alert"
+        className="mx-auto max-w-lg space-y-2 rounded-xl border border-destructive/40 bg-destructive/5 p-6 text-center"
+      >
+        <h1 className="text-lg font-semibold">The church data could not be loaded</h1>
+        <p className="text-sm text-muted-foreground">{message}</p>
+      </div>
+    </div>
+  );
 }
 
 function LoadingShell() {
