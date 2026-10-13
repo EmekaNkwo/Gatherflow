@@ -1,6 +1,5 @@
-import { z } from "zod";
 import type { ChurchSnapshot } from "@/types/snapshot";
-import { err, ok, type Result } from "@/lib/result";
+import type { Result } from "@/lib/result";
 import {
   createCollectionRepository,
   createDocumentRepository,
@@ -9,6 +8,7 @@ import {
   storageKey,
   type LoadReport,
 } from "./collection";
+import { buildExportBundle, parseImportBundle, type ExportBundle } from "./bundle";
 import { churchSettingsSchema, collectionSchemas } from "./schema";
 import type { StorageAdapter } from "./storage";
 
@@ -36,19 +36,7 @@ export interface SnapshotRepository {
   importBundle(raw: unknown, current: ChurchSnapshot): Result<ChurchSnapshot>;
 }
 
-export interface ExportBundle {
-  application: "gatherflow";
-  schemaVersion: number;
-  exportedAt: string;
-  note: string;
-  data: Omit<ChurchSnapshot, "careRecords">;
-}
-
-const exportBundleSchema = z.object({
-  application: z.literal("gatherflow"),
-  schemaVersion: z.number(),
-  data: z.record(z.string(), z.unknown()),
-});
+export type { ExportBundle };
 
 export function createSnapshotRepository(
   adapter: StorageAdapter,
@@ -160,88 +148,10 @@ export function createSnapshotRepository(
       return seed;
     },
     exportBundle(snapshot) {
-      // Pastoral-care records and emergency contacts are deliberately left
-      // out: restricted information does not belong in a portable export.
-      return {
-        application: "gatherflow",
-        schemaVersion: SCHEMA_VERSION,
-        exportedAt: new Date().toISOString(),
-        note: "Synthetic demo data. Pastoral-care records and emergency contacts are excluded.",
-        data: {
-          households: snapshot.households,
-          groups: snapshot.groups,
-          tasks: snapshot.tasks,
-          sessions: snapshot.sessions,
-          attendance: snapshot.attendance,
-          templates: snapshot.templates,
-          communications: snapshot.communications,
-          team: snapshot.team,
-          activity: snapshot.activity,
-          settings: snapshot.settings,
-          people: snapshot.people.map((person) =>
-            person.member?.emergencyContact
-              ? {
-                  ...person,
-                  member: { ...person.member, emergencyContact: undefined },
-                }
-              : person,
-          ),
-        },
-      };
+      return buildExportBundle(snapshot, new Date().toISOString());
     },
     importBundle(raw, current) {
-      const envelope = exportBundleSchema.safeParse(raw);
-      if (!envelope.success) {
-        return err("That file is not a GatherFlow export.");
-      }
-      if (envelope.data.schemaVersion !== SCHEMA_VERSION) {
-        return err(
-          `That export uses schema version ${envelope.data.schemaVersion}; this build reads version ${SCHEMA_VERSION}.`,
-        );
-      }
-
-      const report: LoadReport = { dropped: 0, issues: [] };
-      const data = envelope.data.data as Record<string, unknown>;
-
-      function parseList<T extends { id: string }>(
-        name: keyof typeof collectionSchemas,
-        fallback: readonly T[],
-      ): readonly T[] {
-        const value = data[name];
-        if (!Array.isArray(value)) return fallback;
-        const schema = collectionSchemas[name] as unknown as z.ZodType<T>;
-        const parsed = value.flatMap((candidate) => {
-          const result = schema.safeParse(candidate);
-          if (!result.success) {
-            report.dropped += 1;
-            return [];
-          }
-          return [result.data];
-        });
-        return parsed;
-      }
-
-      const settings = churchSettingsSchema.safeParse(data.settings);
-      const people = parseList("people", []);
-      if (!people.length) {
-        return err("That export contains no valid people records.");
-      }
-
-      return ok({
-        people,
-        households: parseList("households", []),
-        groups: parseList("groups", []),
-        tasks: parseList("tasks", []),
-        sessions: parseList("sessions", []),
-        attendance: parseList("attendance", []),
-        // Restricted records are never carried by an import.
-        careRecords: [],
-        templates: parseList("templates", current.templates),
-        communications: parseList("communications", []),
-        team: parseList("team", current.team),
-        activity: parseList("activity", []),
-        settings: settings.success ? settings.data : current.settings,
-      });
+      return parseImportBundle(raw, current);
     },
   };
 }

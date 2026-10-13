@@ -108,6 +108,61 @@ Records that fail validation are dropped, reported in the interface, and the cle
 written back — a hand-edited or half-written storage entry can never lock anybody out. Only the
 collections whose array reference changed are rewritten on each command.
 
+### Database (Postgres) — groundwork
+
+> **The running application still uses `localStorage`.** The Postgres layer below is implemented
+> and tested, but the UI is not wired to it yet; that is the next step.
+
+`StorageAdapter` is synchronous by design, so a network database cannot sit behind it. The seam
+for a database is one level up: `AsyncSnapshotRepository`, where the unit of work is a whole
+snapshot and operations can be awaited. `server/db/snapshot-repository.ts` implements it with
+Drizzle over Postgres, keeping the two properties that matter:
+
+- **Validation on read.** Each record is stored whole in a `jsonb` column and parsed with the
+  *same* Zod schema the browser uses. One malformed row is dropped and counted, never thrown.
+- **Only what changed is written.** A commit compares array references and rewrites just those
+  collections.
+
+And adds what a shared database makes necessary:
+
+- **Optimistic concurrency.** `churches.version` is the guard: a commit states the version it
+  read, and one whose guard has been spent is refused with a `conflict` so the caller reloads
+  rather than overwriting work it never saw.
+- **Invariants enforced by the database.** Two rules the application previously held only in
+  memory are now indexes, which is what makes them true across concurrent writers:
+  `tasks_automation_key_unique` (the automation idempotency guarantee) and
+  `attendance_session_person_unique`.
+- **Deterministic ordering.** Loads are `ORDER BY id`; without it Postgres is free to reshuffle
+  every list between reloads.
+
+Alongside `data`, a small set of columns is *promoted* out of each record — those the database
+needs to enforce an invariant or answer a query without loading the whole church. They are
+derived from the record on write in one place, so they cannot disagree with it. This suits an
+access pattern of "load one church" and is deliberately not a fully normalised schema; when
+server-side filtering arrives, more columns get promoted and the records stay put.
+
+```bash
+cp .env.example .env.local        # then set DATABASE_URL
+
+docker run -d --name gatherflow-pg \
+  -e POSTGRES_USER=gatherflow -e POSTGRES_PASSWORD=gatherflow \
+  -e POSTGRES_DB=gatherflow -p 5466:5432 postgres:17-alpine
+
+npm run db:migrate                # apply migrations
+npm run test:db                   # 13 integration tests against that database
+```
+
+| Command | What it does |
+| --- | --- |
+| `npm run db:generate` | Generate a migration from `server/db/schema.ts` |
+| `npm run db:migrate` | Apply pending migrations |
+| `npm run db:studio` | Browse the database |
+| `npm run test:db` | Integration tests (needs `TEST_DATABASE_URL`) |
+
+The database tests skip themselves when `TEST_DATABASE_URL` is unset, so `npm test` stays green
+on a machine with no Postgres. Point it at a throwaway database: the tests create and delete
+churches.
+
 ---
 
 ## Privacy and data handling
@@ -173,8 +228,9 @@ verify delivery and should not claim it.
 ## Testing
 
 ```bash
-npm test      # 124 unit tests
-npm run e2e   # 13 end-to-end tests
+npm test        # 124 unit tests (+13 database tests when TEST_DATABASE_URL is set)
+npm run test:db # the 13 database integration tests on their own
+npm run e2e     # 13 end-to-end tests
 ```
 
 Unit tests cover the business rules directly, with hand-built fixtures and an injected clock and
@@ -192,8 +248,9 @@ recovery from corrupted storage, the public welcome page, and mobile layout.
 
 ## Known limitations
 
-- **No backend.** No authentication, no multi-user sync, no audit trail outside the browser.
-  Clearing site data deletes everything.
+- **No backend yet.** No authentication, no multi-user sync, no audit trail outside the browser;
+  clearing site data deletes everything. The Postgres persistence layer is written and tested but
+  not yet wired to the interface, and authorization is still browser-side only.
 - **One browser, one church.** Data does not follow the user between devices.
 - **Membership state is not historical.** Attendance charts group people by what they are *now*,
   which the reports say on the page.
@@ -208,4 +265,5 @@ recovery from corrupted storage, the public welcome page, and mobile layout.
 ## Stack
 
 Next.js 16 (App Router) · React 19 · TypeScript strict · Tailwind CSS v4 · shadcn/ui on Base UI ·
-Zustand · React Hook Form + Zod · TanStack Table v9 · Recharts · Vitest · Playwright.
+Zustand · React Hook Form + Zod · TanStack Table v9 · Recharts · Vitest · Playwright ·
+Drizzle ORM on Postgres (persistence groundwork; see [Database](#database-postgres--groundwork)).
