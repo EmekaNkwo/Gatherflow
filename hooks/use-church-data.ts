@@ -7,9 +7,9 @@ import type { CommandResult } from "@/services/core/events";
 import type {
   CommandInput,
   CommandName,
-  CommandOutput,
+  CommandResultOf,
 } from "@/services/commands/registry";
-import { useChurchStore, type Command } from "@/stores/church-store";
+import { useChurchStore } from "@/stores/church-store";
 import type { ChurchSnapshot } from "@/types/snapshot";
 
 /**
@@ -51,18 +51,13 @@ export interface CommandRunner {
     name: N,
     input: CommandInput<N>,
     options?: CommandOptions,
-  ) => Promise<Result<CommandResult & CommandOutput<N>>>;
-  /**
-   * @deprecated Closure form, local mode only. Use `dispatch`.
-   */
-  run: <T>(command: Command<T>, options?: CommandOptions) => Result<CommandResult & T>;
+  ) => Promise<Result<CommandResultOf<N>>>;
   undo: () => void;
   canUndo: boolean;
   undoLabel?: string;
 }
 
 export function useCommand(): CommandRunner {
-  const runCommand = useChurchStore((state) => state.run);
   const dispatchCommand = useChurchStore((state) => state.dispatch);
   const undoCommand = useChurchStore((state) => state.undo);
   const undoEntry = useChurchStore((state) => state.undoEntry);
@@ -72,35 +67,6 @@ export function useCommand(): CommandRunner {
     if (outcome.ok) toast.success(`Undone: ${outcome.value}`);
     else toast.error(outcome.error);
   }, [undoCommand]);
-
-  const run = useCallback<CommandRunner["run"]>(
-    (command, options) => {
-      const outcome = runCommand(command, { undoLabel: options?.undoLabel });
-
-      if (!outcome.ok) {
-        toast.error(outcome.error);
-        return outcome;
-      }
-
-      if (!options?.silent) {
-        const [headline, ...rest] = options?.successMessage
-          ? [options.successMessage, ...outcome.value.notices]
-          : outcome.value.notices;
-
-        if (headline) {
-          toast.success(headline, {
-            description: rest.length ? rest.join(" ") : undefined,
-            action: options?.undoLabel
-              ? { label: "Undo", onClick: () => undo() }
-              : undefined,
-          });
-        }
-      }
-
-      return outcome;
-    },
-    [runCommand, undo],
-  );
 
   /**
    * Reports a command's outcome. Shared by both forms so a refusal and a
@@ -139,5 +105,5 @@ export function useCommand(): CommandRunner {
     [dispatchCommand, report],
   );
 
-  return { dispatch, run, undo, canUndo: Boolean(undoEntry), undoLabel: undoEntry?.label };
+  return { dispatch, undo, canUndo: Boolean(undoEntry), undoLabel: undoEntry?.label };
 }

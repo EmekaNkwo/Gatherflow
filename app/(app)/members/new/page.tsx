@@ -63,8 +63,8 @@ export default function NewMemberPage() {
       ? findDuplicates({ firstName, lastName, phone, email })
       : [];
 
-  const submit = () => {
-    const outcome = register({
+  const submit = async () => {
+    const outcome = await register({
       firstName,
       lastName,
       preferredName: preferredName || undefined,
@@ -211,7 +211,7 @@ export default function NewMemberPage() {
           </Field>
 
           <div className="flex flex-wrap gap-2">
-            <Button onClick={submit} disabled={!firstName.trim() || !lastName.trim()}>
+            <Button onClick={() => void submit()} disabled={!firstName.trim() || !lastName.trim()}>
               Register member
             </Button>
             <Button variant="outline" onClick={() => router.back()}>

@@ -283,8 +283,8 @@ export default function SessionPage() {
       <CsvImportDialog
         open={importing}
         onOpenChange={setImporting}
-        onConfirm={(csv) => {
-          const outcome = importCsv(sessionId, csv);
+        onConfirm={async (csv) => {
+          const outcome = await importCsv(sessionId, csv);
           if (outcome.ok) setImporting(false);
         }}
       />

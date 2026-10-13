@@ -37,15 +37,15 @@ export default function DashboardPage() {
   const [completing, setCompleting] = useState<TaskWithPerson | null>(null);
   const [rescheduling, setRescheduling] = useState<TaskWithPerson | null>(null);
 
-  const onComplete = (outcome: TaskOutcome, note?: string) => {
+  const onComplete = async (outcome: TaskOutcome, note?: string) => {
     if (!completing) return;
-    const result = complete(completing.task.id, outcome, note);
+    const result = await complete(completing.task.id, outcome, note);
     if (result.ok) setCompleting(null);
   };
 
-  const onReschedule = (dueDate: string, reason?: string) => {
+  const onReschedule = async (dueDate: string, reason?: string) => {
     if (!rescheduling) return;
-    const result = reschedule(rescheduling.task.id, dueDate, reason);
+    const result = await reschedule(rescheduling.task.id, dueDate, reason);
     if (result.ok) setRescheduling(null);
   };
 

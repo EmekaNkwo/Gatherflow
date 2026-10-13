@@ -4,21 +4,13 @@ import { useCallback, useMemo } from "react";
 import { taskScope } from "@/lib/permissions";
 import type { IsoDate, PersonId, TaskId, TeamMemberId } from "@/types/common";
 import type { TaskOutcome } from "@/types/follow-up";
-import { completeTask } from "@/services/follow-ups/completion";
 import {
   completionRate,
   selectTasks,
   volunteerWorkloads,
   type TaskFilters,
 } from "@/services/follow-ups/selectors";
-import {
-  assignTask,
-  cancelTask,
-  createFollowUpTask,
-  rescheduleTask,
-  startTask,
-  type CreateTaskInput,
-} from "@/services/follow-ups/tasks";
+import { type CreateTaskInput } from "@/services/follow-ups/tasks";
 import { useSessionStore } from "@/stores/session-store";
 import { useCommand, useSnapshot } from "./use-church-data";
 import { useNow } from "./use-now";
@@ -32,7 +24,7 @@ import { useNow } from "./use-now";
 export function useFollowUps(filters: TaskFilters = {}) {
   const snapshot = useSnapshot();
   const now = useNow();
-  const { run } = useCommand();
+  const { dispatch } = useCommand();
   const role = useSessionStore((state) => state.role);
   const teamMemberId = useSessionStore((state) => state.teamMemberId);
 
@@ -70,41 +62,41 @@ export function useFollowUps(filters: TaskFilters = {}) {
 
   const create = useCallback(
     (input: CreateTaskInput) =>
-      run((snap, ctx) => createFollowUpTask(snap, input, ctx), { undoLabel: "task creation" }),
-    [run],
+      dispatch("task.create", input, { undoLabel: "task creation" }),
+    [dispatch],
   );
 
   const complete = useCallback(
     (taskId: TaskId, outcome: TaskOutcome, outcomeNote?: string) =>
-      run((snap, ctx) => completeTask(snap, { taskId, outcome, outcomeNote }, ctx), {
-        undoLabel: "completing the task",
-      }),
-    [run],
+      dispatch(
+        "task.complete",
+        { taskId, outcome, outcomeNote },
+        { undoLabel: "completing the task" },
+      ),
+    [dispatch],
   );
 
   const reschedule = useCallback(
     (taskId: TaskId, dueDate: IsoDate, reason?: string) =>
-      run((snap, ctx) => rescheduleTask(snap, taskId, dueDate, reason, ctx), {
-        undoLabel: "rescheduling",
-      }),
-    [run],
+      dispatch("task.reschedule", { taskId, dueDate, reason }, { undoLabel: "rescheduling" }),
+    [dispatch],
   );
 
   const assign = useCallback(
     (taskId: TaskId, assigneeId: TeamMemberId | undefined) =>
-      run((snap, ctx) => assignTask(snap, taskId, assigneeId, ctx)),
-    [run],
+      dispatch("task.assign", { taskId, assigneeId }),
+    [dispatch],
   );
 
   const start = useCallback(
-    (taskId: TaskId) => run((snap) => startTask(snap, taskId), { silent: true }),
-    [run],
+    (taskId: TaskId) => dispatch("task.start", { taskId }, { silent: true }),
+    [dispatch],
   );
 
   const cancel = useCallback(
     (taskId: TaskId, reason?: string) =>
-      run((snap, ctx) => cancelTask(snap, taskId, reason, ctx), { undoLabel: "cancelling the task" }),
-    [run],
+      dispatch("task.cancel", { taskId, reason }, { undoLabel: "cancelling the task" }),
+    [dispatch],
   );
 
   return {

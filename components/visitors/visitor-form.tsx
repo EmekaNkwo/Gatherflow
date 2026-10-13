@@ -92,8 +92,8 @@ export function VisitorForm() {
     [findDuplicates, firstName, lastName, phone, email],
   );
 
-  const onSubmit = form.handleSubmit((values) => {
-    const outcome = registerVisitor({
+  const onSubmit = form.handleSubmit(async (values) => {
+    const outcome = await registerVisitor({
       firstName: values.firstName,
       lastName: values.lastName,
       preferredName: values.preferredName || undefined,
@@ -115,13 +115,13 @@ export function VisitorForm() {
     }
   });
 
-  const useExisting = (personId: string) => {
+  const useExisting = async (personId: string) => {
     const sessionId = form.getValues("sessionId");
     if (!sessionId) {
       router.push(`/visitors/${personId}`);
       return;
     }
-    const outcome = recordAnotherVisit(personId, sessionId);
+    const outcome = await recordAnotherVisit(personId, sessionId);
     if (outcome.ok) router.push(`/visitors/${personId}`);
   };
 

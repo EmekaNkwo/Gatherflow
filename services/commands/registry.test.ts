@@ -103,6 +103,29 @@ describe("command registry", () => {
       }
     });
 
+    it("bounds a bulk action's id list", () => {
+      // An unbounded list would let one request rewrite the whole church.
+      const tooMany = Array.from({ length: 501 }, (_, i) => `person-${i}`);
+      expect(
+        COMMANDS["visitor.bulkAssign"].schema.safeParse({
+          personIds: tooMany,
+          assigneeId: "tm-1",
+        }).success,
+      ).toBe(false);
+      expect(
+        COMMANDS["visitor.bulkAssign"].schema.safeParse({
+          personIds: ["person-1"],
+          assigneeId: "tm-1",
+        }).success,
+      ).toBe(true);
+      expect(
+        COMMANDS["visitor.bulkAssign"].schema.safeParse({
+          personIds: [],
+          assigneeId: "tm-1",
+        }).success,
+      ).toBe(false);
+    });
+
     it("bounds free text so a request cannot store something unbounded", () => {
       const tooLong = "x".repeat(5_000);
       expect(
@@ -129,6 +152,8 @@ describe("command registry", () => {
       "task.assign",
       "task.start",
       "task.cancel",
+      "task.createForPeople",
+      "visitor.bulkAssign",
       "member.register",
       "member.changeStatus",
       "member.recordOrientationCompleted",

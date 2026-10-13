@@ -11,17 +11,9 @@ import {
   sessionSummaries,
   sessionSummary,
 } from "@/services/analytics/attendance";
+import { presentRecords } from "@/services/attendance/check-in";
 import {
-  importAttendanceCsv,
-  moveAttendance,
-  presentRecords,
-  recordAttendance,
-  removeAttendance,
-} from "@/services/attendance/check-in";
-import {
-  createSession,
   sessionsByDate,
-  updateSessionNotes,
   upcomingSessions,
   type CreateSessionInput,
 } from "@/services/attendance/sessions";
@@ -32,7 +24,7 @@ import { useNow } from "./use-now";
 export function useAttendance(options: { serviceType?: ServiceType; weeks?: number } = {}) {
   const snapshot = useSnapshot();
   const now = useNow();
-  const { run } = useCommand();
+  const { dispatch } = useCommand();
   const today = toIsoDate(now);
 
   const sessions = useMemo(() => sessionsByDate(snapshot), [snapshot]);
@@ -45,46 +37,50 @@ export function useAttendance(options: { serviceType?: ServiceType; weeks?: numb
   const weeklyAverage = useMemo(() => averageWeeklyAttendance(snapshot, now), [snapshot, now]);
 
   const addSession = useCallback(
-    (input: CreateSessionInput) => run((snap, ctx) => createSession(snap, input, ctx)),
-    [run],
+    (input: CreateSessionInput) => dispatch("session.create", input),
+    [dispatch],
   );
 
   const checkIn = useCallback(
     (sessionId: SessionId, personId: PersonId, method: CheckInMethod = "search") =>
-      run((snap, ctx) => recordAttendance(snap, { sessionId, personId, method }, ctx), {
-        undoLabel: "check-in",
-      }),
-    [run],
+      dispatch(
+        "attendance.record",
+        { sessionId, personId, method },
+        { undoLabel: "check-in" },
+      ),
+    [dispatch],
   );
 
   const correctRemove = useCallback(
     (recordId: string, reason?: string) =>
-      run((snap, ctx) => removeAttendance(snap, recordId, reason, ctx), {
-        undoLabel: "attendance correction",
-      }),
-    [run],
+      dispatch(
+        "attendance.remove",
+        { recordId, reason },
+        { undoLabel: "attendance correction" },
+      ),
+    [dispatch],
   );
 
   const moveRecord = useCallback(
     (recordId: string, toSessionId: SessionId, reason?: string) =>
-      run((snap, ctx) => moveAttendance(snap, recordId, toSessionId, reason, ctx), {
-        undoLabel: "moving the attendance record",
-      }),
-    [run],
+      dispatch(
+        "attendance.move",
+        { recordId, toSessionId, reason },
+        { undoLabel: "moving the attendance record" },
+      ),
+    [dispatch],
   );
 
   const importCsv = useCallback(
     (sessionId: SessionId, csv: string) =>
-      run((snap, ctx) => importAttendanceCsv(snap, sessionId, csv, ctx), {
-        undoLabel: "CSV import",
-      }),
-    [run],
+      dispatch("attendance.importCsv", { sessionId, csv }, { undoLabel: "CSV import" }),
+    [dispatch],
   );
 
   const saveNotes = useCallback(
     (sessionId: SessionId, notes: string) =>
-      run((snap) => updateSessionNotes(snap, sessionId, notes)),
-    [run],
+      dispatch("session.updateNotes", { sessionId, notes }),
+    [dispatch],
   );
 
   return {

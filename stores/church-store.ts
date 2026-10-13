@@ -4,8 +4,7 @@ import { create } from "zustand";
 import { createSeedSnapshot } from "@/data/seed";
 import { err, ok, type Result } from "@/lib/result";
 import { runAutomations } from "@/services/automation/rules";
-import { createCommandContext, type CommandContext } from "@/services/core/context";
-import type { CommandResult } from "@/services/core/events";
+import { createCommandContext } from "@/services/core/context";
 import type { LoadReport } from "@/services/repositories/collection";
 import {
   createSnapshotRepository,
@@ -18,27 +17,21 @@ import {
   COMMANDS,
   type CommandInput,
   type CommandName,
-  type CommandOutput,
+  type CommandResultOf,
 } from "@/services/commands/registry";
 import type { ChurchSnapshot } from "@/types/snapshot";
 
 /**
  * The single source of truth for church data.
  *
- * Components never mutate this state. They call `run` with a domain command,
- * which produces a new snapshot; the store then applies the automation rules
- * once, persists only the collections that changed, and keeps one step of
- * undo. Because every mutation goes through here, rules can never fire twice
- * for the same action.
+ * Components never mutate this state. They call `dispatch` with a command
+ * name and its input; the authority — the registry locally, the server
+ * remotely — produces the next snapshot. Because every mutation goes through
+ * here, the automation rules can never fire twice for the same action.
  */
 export interface CommandOutcome {
   notices: string[];
 }
-
-export type Command<T> = (
-  snapshot: ChurchSnapshot,
-  ctx: CommandContext,
-) => Result<CommandResult & T>;
 
 interface UndoEntry {
   snapshot: ChurchSnapshot;
@@ -82,12 +75,7 @@ export interface ChurchStore {
     name: N,
     input: CommandInput<N>,
     options?: { undoLabel?: string },
-  ) => Promise<Result<CommandResult & CommandOutput<N>>>;
-  /**
-   * @deprecated Closure form, kept while hooks migrate to `dispatch`. It only
-   * works in `local` mode, because a closure cannot be sent to a server.
-   */
-  run: <T>(command: Command<T>, options?: { undoLabel?: string }) => Result<CommandResult & T>;
+  ) => Promise<Result<CommandResultOf<N>>>;
   undo: () => Result<string>;
   reset: () => void;
   exportBundle: () => ExportBundle | null;
@@ -165,7 +153,7 @@ export const useChurchStore = create<ChurchStore>((set, get) => ({
   },
 
   dispatch: async (name, input, options) => {
-    type Outcome = Result<CommandResult & CommandOutput<typeof name>>;
+    type Outcome = Result<CommandResultOf<typeof name>>;
 
     if (get().mode === "remote") {
       const posted = await postCommand(name, input);
@@ -187,7 +175,7 @@ export const useChurchStore = create<ChurchStore>((set, get) => ({
         events: [],
         notices: posted.value.notices,
         ...posted.value.data,
-      } as CommandResult & CommandOutput<typeof name>);
+      } as CommandResultOf<typeof name>);
     }
 
     const { snapshot } = get();
@@ -219,32 +207,6 @@ export const useChurchStore = create<ChurchStore>((set, get) => ({
       snapshot: automated.snapshot,
       notices,
     }) as Outcome;
-  },
-
-  run: (command, options) => {
-    const { snapshot } = get();
-    if (!snapshot) return err("The church data is still loading.", "not_ready");
-
-    const ctx = createCommandContext({ actorId: actorResolver(), now: clock() });
-    const outcome = command(snapshot, ctx);
-    if (!outcome.ok) return outcome;
-
-    // Automations run exactly once per command, against the events the
-    // command reported — never off the back of a re-render.
-    const automated = runAutomations(outcome.value.snapshot, outcome.value.events, ctx);
-    const notices = [...outcome.value.notices, ...automated.notices];
-
-    getRepository().save(snapshot, automated.snapshot);
-
-    set({
-      snapshot: automated.snapshot,
-      lastNotices: notices,
-      undoEntry: options?.undoLabel
-        ? { snapshot, label: options.undoLabel }
-        : get().undoEntry,
-    });
-
-    return ok({ ...outcome.value, snapshot: automated.snapshot, notices });
   },
 
   undo: () => {

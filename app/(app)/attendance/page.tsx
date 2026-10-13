@@ -158,8 +158,8 @@ export default function AttendancePage() {
         open={creating}
         onOpenChange={setCreating}
         today={today}
-        onConfirm={(input) => {
-          const outcome = addSession(input);
+        onConfirm={async (input) => {
+          const outcome = await addSession(input);
           if (outcome.ok) setCreating(false);
         }}
       />

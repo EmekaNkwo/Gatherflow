@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Result } from "@/lib/result";
+import { ok, type Result } from "@/lib/result";
 import type { CommandContext } from "@/services/core/context";
 import type { CommandResult } from "@/services/core/events";
 import type { ChurchSnapshot } from "@/types/snapshot";
@@ -24,6 +24,7 @@ import {
   assignTask,
   cancelTask,
   createFollowUpTask,
+  createTasksForPeople,
   rescheduleTask,
   startTask,
 } from "@/services/follow-ups/tasks";
@@ -102,6 +103,12 @@ function enumOf<T extends string>(values: readonly T[]) {
   return z.enum(values as unknown as [T, ...T[]]);
 }
 
+/**
+ * Upper bound on a bulk action's id list. A request is allowed to touch a
+ * selection, not the whole church.
+ */
+const MAX_BULK = 500;
+
 const id = z.string().min(1);
 const optionalId = id.optional();
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD");
@@ -160,21 +167,17 @@ const communicationStatus = z.enum([
  * part of the type so that payload survives the trip over HTTP rather than
  * being silently dropped.
  */
-export interface CommandDefinition<I, O extends object = object> {
+export interface CommandDefinition<I, R extends CommandResult = CommandResult> {
   /** Checked by the server before the command runs. */
   capability: Capability;
   /** Validates a request body. The browser's input is already typed. */
   schema: z.ZodType<I>;
-  run: (
-    snapshot: ChurchSnapshot,
-    input: I,
-    ctx: CommandContext,
-  ) => Result<CommandResult & O>;
+  run: (snapshot: ChurchSnapshot, input: I, ctx: CommandContext) => Result<R>;
 }
 
-function define<I, O extends object = object>(
-  definition: CommandDefinition<I, O>,
-): CommandDefinition<I, O> {
+function define<I, R extends CommandResult>(
+  definition: CommandDefinition<I, R>,
+): CommandDefinition<I, R> {
   return definition;
 }
 
@@ -194,7 +197,7 @@ export const COMMANDS = {
       assignedTo: optionalId,
       preferredMethod: contactMethod,
       permissionGranted: z.boolean(),
-      interests: z.array(z.string().max(60)).optional(),
+      interests: z.array(z.string().max(60)).readonly().optional(),
       notes: shortText.optional(),
       selfRegistered: z.boolean().optional(),
       returningVisitor: z.boolean().optional(),
@@ -304,6 +307,49 @@ export const COMMANDS = {
     run: (snapshot, input, ctx) => cancelTask(snapshot, input.taskId, input.reason, ctx),
   }),
 
+  // --- Bulk actions -------------------------------------------------------
+  // Composites, registered as commands in their own right so they run on the
+  // server too. The id lists are bounded: an unbounded one would let a single
+  // request rewrite the whole church.
+  "visitor.bulkAssign": define({
+    capability: "tasks.assign",
+    schema: z.object({ personIds: z.array(id).min(1).max(MAX_BULK), assigneeId: id }),
+    run: (snapshot, input, ctx) => {
+      let current = snapshot;
+      let assigned = 0;
+      for (const personId of input.personIds) {
+        const outcome = assignVisitor(current, personId, input.assigneeId, ctx);
+        // A refusal for one person — opted out, already gone — must not abort
+        // the rest of the batch, so it is counted and skipped.
+        if (outcome.ok) {
+          current = outcome.value.snapshot;
+          assigned += 1;
+        }
+      }
+      return ok({
+        snapshot: current,
+        events: [],
+        notices: [`${assigned} visitor${assigned === 1 ? "" : "s"} assigned.`],
+      });
+    },
+  }),
+
+  "task.createForPeople": define({
+    capability: "tasks.write",
+    schema: z.object({
+      personIds: z.array(id).min(1).max(MAX_BULK),
+      input: z.object({
+        type: enumOf(FOLLOW_UP_TASK_TYPES),
+        assigneeId: optionalId,
+        dueDate: isoDate.optional(),
+        priority: enumOf(TASK_PRIORITIES).optional(),
+        notes: shortText.optional(),
+      }),
+    }),
+    run: (snapshot, input, ctx) =>
+      ok(createTasksForPeople(snapshot, input.personIds, input.input, ctx)),
+  }),
+
   // --- Members and people -------------------------------------------------
   "member.register": define({
     capability: "people.write",
@@ -375,7 +421,7 @@ export const COMMANDS = {
         phone: z.string().max(32).optional(),
         email: z.string().max(200).optional(),
         ageGroup: ageGroup.optional(),
-        interests: z.array(z.string().max(60)).optional(),
+        interests: z.array(z.string().max(60)).readonly().optional(),
         householdId: id.nullable().optional(),
         notes: shortText.optional(),
       }),
@@ -707,12 +753,29 @@ export const COMMANDS = {
 export type CommandName = keyof typeof COMMANDS;
 
 /** The input a given command takes. */
-export type CommandInput<N extends CommandName> =
-  (typeof COMMANDS)[N] extends CommandDefinition<infer I, object> ? I : never;
+export type CommandInput<N extends CommandName> = Parameters<
+  (typeof COMMANDS)[N]["run"]
+>[1];
 
-/** The extra payload a given command reports, beyond the snapshot. */
-export type CommandOutput<N extends CommandName> =
-  (typeof COMMANDS)[N] extends CommandDefinition<never, infer O> ? O : object;
+/**
+ * What a given command reports.
+ *
+ * Read off the `run` function's own return type, taking the success branch of
+ * the `Result` union. Earlier attempts inferred through the generic interface
+ * (`CommandDefinition<never, infer R>`) and silently fell back to the default,
+ * which accepts anything — so the payload a caller needs disappeared with no
+ * error to show for it. Reading the function directly cannot do that.
+ */
+export type CommandResultOf<N extends CommandName> = Extract<
+  ReturnType<(typeof COMMANDS)[N]["run"]>,
+  { ok: true }
+>["value"];
+
+/** The extra payload beyond the snapshot, events and notices. */
+export type CommandOutput<N extends CommandName> = Omit<
+  CommandResultOf<N>,
+  keyof CommandResult
+>;
 
 export const COMMAND_NAMES = Object.keys(COMMANDS) as CommandName[];
 
@@ -735,6 +798,6 @@ export function isCommandName(value: unknown): value is CommandName {
  * This is the single place that widens the input to `unknown`, which is what
  * it genuinely is before the schema has parsed it.
  */
-export function commandFor(name: CommandName): CommandDefinition<unknown, object> {
-  return COMMANDS[name] as unknown as CommandDefinition<unknown, object>;
+export function commandFor(name: CommandName): CommandDefinition<unknown, CommandResult> {
+  return COMMANDS[name] as unknown as CommandDefinition<unknown, CommandResult>;
 }

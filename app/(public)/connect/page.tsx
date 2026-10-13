@@ -73,8 +73,8 @@ function ConnectForm() {
 
   const watched = useWatch({ control: form.control });
 
-  const onSubmit = form.handleSubmit((values) => {
-    const outcome = registerVisitor({
+  const onSubmit = form.handleSubmit(async (values) => {
+    const outcome = await registerVisitor({
       firstName: values.firstName,
       lastName: values.lastName,
       phone: values.phone || undefined,

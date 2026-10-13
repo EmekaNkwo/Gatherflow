@@ -11,22 +11,13 @@ import type {
   ServiceDefinition,
 } from "@/types/settings";
 import type { DemoRole } from "@/types/team";
-import {
-  setTeamMemberActive,
-  updateAutomationRule,
-  updateChurchProfile,
-  updateEngagementCriteria,
-  updatePipelineStages,
-  updateServices,
-  upsertTeamMember,
-} from "@/services/settings/settings";
 import { useChurchStore } from "@/stores/church-store";
 import { useCommand, useSnapshot } from "./use-church-data";
 
 /** Church configuration, the automation rules and the demo data controls. */
 export function useChurchSettings() {
   const snapshot = useSnapshot();
-  const { run } = useCommand();
+  const { dispatch } = useCommand();
   const reset = useChurchStore((state) => state.reset);
   const exportBundle = useChurchStore((state) => state.exportBundle);
   const importBundle = useChurchStore((state) => state.importBundle);
@@ -41,41 +32,44 @@ export function useChurchSettings() {
 
   const saveProfile = useCallback(
     (changes: { churchName?: string; timezoneLabel?: string; defaultFollowUpDueInDays?: number }) =>
-      run((snap) => updateChurchProfile(snap, changes)),
-    [run],
+      dispatch("settings.updateProfile", changes),
+    [dispatch],
   );
 
   const saveRule = useCallback(
     (id: AutomationRuleId, changes: Partial<Omit<AutomationRuleConfig, "id">>) =>
-      run((snap) => updateAutomationRule(snap, id, changes)),
-    [run],
+      dispatch("settings.updateAutomationRule", { id, changes }),
+    [dispatch],
   );
 
   const saveEngagement = useCallback(
-    (changes: Partial<EngagementCriteria>) => run((snap) => updateEngagementCriteria(snap, changes)),
-    [run],
+    (changes: Partial<EngagementCriteria>) =>
+      dispatch("settings.updateEngagement", changes),
+    [dispatch],
   );
 
   const saveStages = useCallback(
-    (next: readonly PipelineStage[]) => run((snap) => updatePipelineStages(snap, next)),
-    [run],
+    (next: readonly PipelineStage[]) =>
+      dispatch("settings.updatePipelineStages", { stages: [...next] }),
+    [dispatch],
   );
 
   const saveServices = useCallback(
-    (next: readonly ServiceDefinition[]) => run((snap) => updateServices(snap, next)),
-    [run],
+    (next: readonly ServiceDefinition[]) =>
+      dispatch("settings.updateServices", { services: [...next] }),
+    [dispatch],
   );
 
   const saveTeamMember = useCallback(
     (input: { id?: string; name: string; role: DemoRole; title?: string; active?: boolean }) =>
-      run((snap, ctx) => upsertTeamMember(snap, input, ctx)),
-    [run],
+      dispatch("settings.upsertTeamMember", input),
+    [dispatch],
   );
 
   const setMemberActive = useCallback(
     (teamMemberId: string, active: boolean) =>
-      run((snap) => setTeamMemberActive(snap, teamMemberId, active)),
-    [run],
+      dispatch("settings.setTeamMemberActive", { teamMemberId, active }),
+    [dispatch],
   );
 
   const downloadBundle = useCallback(() => {

@@ -69,8 +69,8 @@ export function QuickRegisterForm({ sessionId }: { sessionId?: string }) {
       ? findDuplicates({ firstName, lastName, phone })
       : [];
 
-  const onSubmit = form.handleSubmit((values) => {
-    const outcome = registerVisitor({
+  const onSubmit = form.handleSubmit(async (values) => {
+    const outcome = await registerVisitor({
       firstName: values.firstName,
       lastName: values.lastName,
       phone: values.phone || undefined,

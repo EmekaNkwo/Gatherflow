@@ -4,14 +4,7 @@ import { useCallback, useMemo } from "react";
 import { downloadCsv, toCsv } from "@/lib/csv";
 import type { HouseholdId, IsoDate, PersonId } from "@/types/common";
 import type { EmergencyContact, MembershipStatus } from "@/types/person";
-import {
-  changeMembershipStatus,
-  recordOrientationCompleted,
-  registerMember,
-  setEmergencyContact,
-  setRequestedContact,
-  type RegisterMemberInput,
-} from "@/services/members/membership";
+import { type RegisterMemberInput } from "@/services/members/membership";
 import {
   MEMBER_EXPORT_COLUMNS,
   groupParticipation,
@@ -20,13 +13,7 @@ import {
   type MemberQuery,
   type MemberRow,
 } from "@/services/members/selectors";
-import {
-  correctPerson,
-  createHousehold,
-  deletePerson,
-  setHousehold,
-  type PersonCorrection,
-} from "@/services/people/people";
+import { type PersonCorrection } from "@/services/people/people";
 import { useCommand, useSnapshot } from "./use-church-data";
 import { useNow } from "./use-now";
 
@@ -34,7 +21,7 @@ import { useNow } from "./use-now";
 export function useMembers(query: MemberQuery = {}) {
   const snapshot = useSnapshot();
   const now = useNow();
-  const { run } = useCommand();
+  const { dispatch } = useCommand();
 
   const rows = useMemo(() => selectMembers(snapshot, query, now), [snapshot, query, now]);
   const breakdown = useMemo(() => membershipBreakdown(snapshot), [snapshot]);
@@ -50,61 +37,59 @@ export function useMembers(query: MemberQuery = {}) {
 
   const register = useCallback(
     (input: RegisterMemberInput) =>
-      run((snap, ctx) => registerMember(snap, input, ctx), { undoLabel: "membership registration" }),
-    [run],
+      dispatch("member.register", input, { undoLabel: "membership registration" }),
+    [dispatch],
   );
 
   const changeStatus = useCallback(
     (personId: PersonId, status: MembershipStatus, reason?: string) =>
-      run((snap, ctx) => changeMembershipStatus(snap, personId, status, reason, ctx), {
-        undoLabel: "status change",
-      }),
-    [run],
+      dispatch(
+        "member.changeStatus",
+        { personId, status, reason },
+        { undoLabel: "status change" },
+      ),
+    [dispatch],
   );
 
   const completeOrientation = useCallback(
-    (personId: PersonId) => run((snap, ctx) => recordOrientationCompleted(snap, personId, ctx)),
-    [run],
+    (personId: PersonId) => dispatch("member.recordOrientationCompleted", { personId }),
+    [dispatch],
   );
 
   const correct = useCallback(
     (personId: PersonId, changes: PersonCorrection) =>
-      run((snap, ctx) => correctPerson(snap, personId, changes, ctx), {
-        undoLabel: "record correction",
-      }),
-    [run],
+      dispatch("person.correct", { personId, changes }, { undoLabel: "record correction" }),
+    [dispatch],
   );
 
   const remove = useCallback(
     (personId: PersonId, reason?: string) =>
-      run((snap, ctx) => deletePerson(snap, personId, reason, ctx), {
-        undoLabel: "record deletion",
-      }),
-    [run],
+      dispatch("person.delete", { personId, reason }, { undoLabel: "record deletion" }),
+    [dispatch],
   );
 
   const saveEmergencyContact = useCallback(
     (personId: PersonId, contact: EmergencyContact | undefined) =>
-      run((snap, ctx) => setEmergencyContact(snap, personId, contact, ctx)),
-    [run],
+      dispatch("member.setEmergencyContact", { personId, contact }),
+    [dispatch],
   );
 
   const markRequestedContact = useCallback(
     (personId: PersonId, requested: boolean) =>
-      run((snap, ctx) => setRequestedContact(snap, personId, requested, ctx)),
-    [run],
+      dispatch("member.setRequestedContact", { personId, requested }),
+    [dispatch],
   );
 
   const addHousehold = useCallback(
     (input: { name: string; area?: string; primaryContactId?: PersonId }) =>
-      run((snap, ctx) => createHousehold(snap, input, ctx)),
-    [run],
+      dispatch("household.create", input),
+    [dispatch],
   );
 
   const assignHousehold = useCallback(
     (personId: PersonId, householdId: HouseholdId | undefined) =>
-      run((snap, ctx) => setHousehold(snap, personId, householdId, ctx)),
-    [run],
+      dispatch("person.setHousehold", { personId, householdId }),
+    [dispatch],
   );
 
   const exportCsv = useCallback(

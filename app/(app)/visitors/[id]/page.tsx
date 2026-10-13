@@ -130,8 +130,8 @@ export default function VisitorProfilePage() {
               <Button
                 size="sm"
                 className="gap-1.5"
-                onClick={() => {
-                  const outcome = registerMember({
+                onClick={async () => {
+                  const outcome = await registerMember({
                     personId: person.id,
                     membershipDate: toIsoDate(now),
                   });

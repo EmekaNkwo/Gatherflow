@@ -117,8 +117,8 @@ export default function HouseholdsPage() {
             </Button>
             <Button
               disabled={!name.trim()}
-              onClick={() => {
-                const outcome = addHousehold({ name, area: area || undefined });
+              onClick={async () => {
+                const outcome = await addHousehold({ name, area: area || undefined });
                 if (outcome.ok) {
                   setCreating(false);
                   setName("");

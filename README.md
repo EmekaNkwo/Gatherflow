@@ -62,6 +62,31 @@ types/                   The domain model
 data/seed/               Deterministic synthetic data
 ```
 
+### Commands are named
+
+Every change is a registered command. `services/commands/registry.ts` binds each of the 51
+commands to three things that must never drift apart: the capability it requires, a Zod schema
+for its input, and the function that applies it.
+
+There is one registry and both sides use it. In the browser the store looks a command up and runs
+it locally; on the server the same entry supplies the capability to check and the schema to
+validate the request body against, before the same function runs. So a command cannot be exposed
+over HTTP without declaring what it needs, and the two sides cannot disagree.
+
+Commands are referred to by name because a closure cannot cross a network:
+
+```ts
+const { dispatch } = useCommand();
+await dispatch("task.complete", { taskId, outcome: "contacted" });
+```
+
+The browser sends a name and an input, never a computed snapshot. The server re-runs the rules
+itself and decides the new state, so a client that lied about the outcome would be ignored.
+
+Some inputs are deliberately *not* accepted from a client. `task.create` takes no `origin` or
+`automationKey`: those belong to the automation engine, and a request able to set them could
+fabricate a generated task — or occupy a key and so suppress the real one.
+
 ### Commands, not mutations
 
 Every change is a pure function from one snapshot to the next:
@@ -165,8 +190,9 @@ churches.
 
 ### Authentication and real authorization — groundwork
 
-> **The interface still uses the browser-side role switcher.** The server-side checks below are
-> implemented and tested, but no screen calls them yet.
+> **The interface still uses the browser-side role switcher** and runs in local mode by default.
+> The server-side checks below are implemented and tested; switching the store to `remote` is
+> what puts them in front of the interface.
 
 The demo's role model shapes affordances; it was never access control, and the section further
 down still says so. This layer makes the same rules a server decision.
@@ -271,8 +297,8 @@ verify delivery and should not claim it.
 ## Testing
 
 ```bash
-npm test        # 124 unit tests (+13 database tests when TEST_DATABASE_URL is set)
-npm run test:db # the 13 database integration tests on their own
+npm test        # 128 unit tests (+28 server tests when TEST_DATABASE_URL is set)
+npm run test:db # the 28 server integration tests on their own
 npm run e2e     # 13 end-to-end tests
 ```
 
@@ -291,10 +317,11 @@ recovery from corrupted storage, the public welcome page, and mobile layout.
 
 ## Known limitations
 
-- **No backend yet.** No multi-user sync and no audit trail outside the browser; clearing site
-  data deletes everything. The Postgres persistence layer and the server-side authentication and
-  authorization are written and tested, but no screen calls them yet — the running interface is
-  still browser-only, including its role switcher.
+- **Local by default.** The store ships in `local` mode so the demo needs no account and no
+  server: data lives in the browser, and clearing site data deletes it. The Postgres persistence
+  layer, the authentication and the authorization are written and tested, and the interface now
+  talks to them through named commands — but `remote` mode has no browser coverage yet, and the
+  role switcher remains a browser-side demo affordance.
 - **One browser, one church.** Data does not follow the user between devices.
 - **Membership state is not historical.** Attendance charts group people by what they are *now*,
   which the reports say on the page.

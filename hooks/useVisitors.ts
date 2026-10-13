@@ -9,18 +9,8 @@ import {
   type DuplicateCandidateInput,
   type DuplicateMatch,
 } from "@/services/visitors/duplicates";
-import {
-  assignVisitor,
-  closeFollowUp,
-  setContactPreferences,
-  setStage,
-  orderedStages,
-} from "@/services/visitors/pipeline";
-import {
-  registerVisitor,
-  recordReturnVisit,
-  type RegisterVisitorInput,
-} from "@/services/visitors/registration";
+import { orderedStages } from "@/services/visitors/pipeline";
+import { type RegisterVisitorInput } from "@/services/visitors/registration";
 import {
   selectVisitors,
   visitorsByStage,
@@ -28,8 +18,7 @@ import {
   type VisitorQuery,
   type VisitorRow,
 } from "@/services/visitors/selectors";
-import { recordMembershipInterest } from "@/services/members/membership";
-import { createTasksForPeople } from "@/services/follow-ups/tasks";
+import type { createTasksForPeople } from "@/services/follow-ups/tasks";
 import { useCommand, useSnapshot } from "./use-church-data";
 import { useNow } from "./use-now";
 
@@ -42,7 +31,7 @@ import { useNow } from "./use-now";
 export function useVisitors(query: VisitorQuery = {}) {
   const snapshot = useSnapshot();
   const now = useNow();
-  const { run } = useCommand();
+  const { dispatch } = useCommand();
 
   const rows = useMemo(() => selectVisitors(snapshot, query, now), [snapshot, query, now]);
   const board = useMemo(() => visitorsByStage(snapshot, now, query), [snapshot, now, query]);
@@ -61,30 +50,30 @@ export function useVisitors(query: VisitorQuery = {}) {
 
   const register = useCallback(
     (input: RegisterVisitorInput) =>
-      run((snap, ctx) => registerVisitor(snap, input, ctx), {
-        undoLabel: "visitor registration",
-      }),
-    [run],
+      dispatch("visitor.register", input, { undoLabel: "visitor registration" }),
+    [dispatch],
   );
 
   const assign = useCallback(
     (personId: PersonId, teamMemberId: TeamMemberId | undefined) =>
-      run((snap, ctx) => assignVisitor(snap, personId, teamMemberId, ctx)),
-    [run],
+      dispatch("visitor.assign", { personId, assigneeId: teamMemberId }),
+    [dispatch],
   );
 
   const moveToStage = useCallback(
     (personId: PersonId, stageId: StageId) =>
-      run((snap, ctx) => setStage(snap, personId, stageId, ctx), { undoLabel: "stage change" }),
-    [run],
+      dispatch("visitor.setStage", { personId, stageId }, { undoLabel: "stage change" }),
+    [dispatch],
   );
 
   const stopFollowUp = useCallback(
     (personId: PersonId, reason: ClosureReason, note?: string, optOut?: boolean) =>
-      run((snap, ctx) => closeFollowUp(snap, { personId, reason, note, optOut }, ctx), {
-        undoLabel: "closing the follow-up",
-      }),
-    [run],
+      dispatch(
+        "visitor.closeFollowUp",
+        { personId, reason, note, optOut },
+        { undoLabel: "closing the follow-up" },
+      ),
+    [dispatch],
   );
 
   const updateContactPreferences = useCallback(
@@ -96,43 +85,29 @@ export function useVisitors(query: VisitorQuery = {}) {
         optedOut?: boolean;
         optOutReason?: string;
       },
-    ) => run((snap, ctx) => setContactPreferences(snap, { personId, ...changes }, ctx)),
-    [run],
+    ) => dispatch("visitor.setContactPreferences", { personId, ...changes }),
+    [dispatch],
   );
 
   const expressMembershipInterest = useCallback(
-    (personId: PersonId) => run((snap, ctx) => recordMembershipInterest(snap, personId, ctx)),
-    [run],
+    (personId: PersonId) => dispatch("visitor.recordMembershipInterest", { personId }),
+    [dispatch],
   );
 
   const recordAnotherVisit = useCallback(
     (personId: PersonId, sessionId: string) =>
-      run((snap, ctx) => recordReturnVisit(snap, personId, sessionId, ctx)),
-    [run],
+      dispatch("visitor.recordReturnVisit", { personId, sessionId }),
+    [dispatch],
   );
 
   const bulkAssign = useCallback(
     (personIds: readonly PersonId[], teamMemberId: TeamMemberId) =>
-      run((snap, ctx) => {
-        let current = snap;
-        let assignedCount = 0;
-        for (const personId of personIds) {
-          const outcome = assignVisitor(current, personId, teamMemberId, ctx);
-          if (outcome.ok) {
-            current = outcome.value.snapshot;
-            assignedCount += 1;
-          }
-        }
-        return {
-          ok: true as const,
-          value: {
-            snapshot: current,
-            events: [],
-            notices: [`${assignedCount} visitor${assignedCount === 1 ? "" : "s"} assigned.`],
-          },
-        };
-      }, { undoLabel: "bulk assignment" }),
-    [run],
+      dispatch(
+        "visitor.bulkAssign",
+        { personIds: [...personIds], assigneeId: teamMemberId },
+        { undoLabel: "bulk assignment" },
+      ),
+    [dispatch],
   );
 
   const bulkCreateTasks = useCallback(
@@ -140,14 +115,12 @@ export function useVisitors(query: VisitorQuery = {}) {
       personIds: readonly PersonId[],
       input: Parameters<typeof createTasksForPeople>[2],
     ) =>
-      run(
-        (snap, ctx) => ({
-          ok: true as const,
-          value: createTasksForPeople(snap, personIds, input, ctx),
-        }),
+      dispatch(
+        "task.createForPeople",
+        { personIds: [...personIds], input },
         { undoLabel: "bulk task creation" },
       ),
-    [run],
+    [dispatch],
   );
 
   const findDuplicates = useCallback(

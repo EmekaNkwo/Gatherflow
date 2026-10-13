@@ -250,8 +250,8 @@ export function TasksView({
         team={assignableTeam}
         today={today}
         defaultDueInDays={snapshot.settings.defaultFollowUpDueInDays}
-        onConfirm={(values: NewTaskValues) => {
-          const outcome = create(values);
+        onConfirm={async (values: NewTaskValues) => {
+          const outcome = await create(values);
           if (outcome.ok) setCreating(false);
         }}
       />
