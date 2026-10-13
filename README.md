@@ -157,11 +157,54 @@ npm run test:db                   # 13 integration tests against that database
 | `npm run db:generate` | Generate a migration from `server/db/schema.ts` |
 | `npm run db:migrate` | Apply pending migrations |
 | `npm run db:studio` | Browse the database |
-| `npm run test:db` | Integration tests (needs `TEST_DATABASE_URL`) |
+| `npm run test:db` | Server integration tests (needs `TEST_DATABASE_URL`) |
 
 The database tests skip themselves when `TEST_DATABASE_URL` is unset, so `npm test` stays green
 on a machine with no Postgres. Point it at a throwaway database: the tests create and delete
 churches.
+
+### Authentication and real authorization — groundwork
+
+> **The interface still uses the browser-side role switcher.** The server-side checks below are
+> implemented and tested, but no screen calls them yet.
+
+The demo's role model shapes affordances; it was never access control, and the section further
+down still says so. This layer makes the same rules a server decision.
+
+**Identity** is Better Auth (`server/auth/auth.ts`), mounted at `/api/auth/[...all]`. It answers
+only "who is this?".
+
+**Authority** is the `church_members` row: which church, which role, which `team` member they act
+as. It is read from the server's own tables on every request, so a client cannot assert its own
+role — the whole difference between this and the role switcher. `resolveChurchSession` fails
+closed: no auth session, no membership, or an ambiguous church all refuse rather than guess.
+
+**One capability map.** `server/auth/authorize.ts` imports `lib/permissions.ts` — the same module
+the interface uses to decide what to show. The button a volunteer cannot see and the request a
+volunteer cannot make therefore cannot disagree, and a capability added to a role is added once.
+The interface's reading stays advisory; the server's is the decision.
+
+**Scope is applied in SQL, not to the result.** A session without `care.read` does not fetch the
+care table at all, and a volunteer's read filters tasks by assignee in the query. Restricted rows
+never enter a process that would have to remember to drop them. Administrators are still
+deliberately excluded from pastoral care, and a test pins that.
+
+**Commands run against the whole church.** `runCommand` authorises, then loads the *full*
+snapshot — the rules need every task to recognise a duplicate automation key and every attendance
+row to count a visit. Narrowing what a caller may read must not narrow what the rules reason
+about. The result is scoped again before it leaves. Commits are retried on a version conflict and
+refused after three collisions.
+
+**Requests are validated before they reach a command.** The domain commands take typed input and
+trust it, which was safe when the only caller was a form in the same program. A request body
+guarantees nothing, so `server/church/input.ts` parses it first and turns a malformed body into an
+ordinary refusal instead of an exception.
+
+```bash
+# BETTER_AUTH_SECRET and BETTER_AUTH_URL as well as DATABASE_URL — see .env.example
+npm run db:migrate
+npm run test:db     # 32 server tests: persistence, authorisation, input validation
+```
 
 ---
 
@@ -248,9 +291,10 @@ recovery from corrupted storage, the public welcome page, and mobile layout.
 
 ## Known limitations
 
-- **No backend yet.** No authentication, no multi-user sync, no audit trail outside the browser;
-  clearing site data deletes everything. The Postgres persistence layer is written and tested but
-  not yet wired to the interface, and authorization is still browser-side only.
+- **No backend yet.** No multi-user sync and no audit trail outside the browser; clearing site
+  data deletes everything. The Postgres persistence layer and the server-side authentication and
+  authorization are written and tested, but no screen calls them yet — the running interface is
+  still browser-only, including its role switcher.
 - **One browser, one church.** Data does not follow the user between devices.
 - **Membership state is not historical.** Attendance charts group people by what they are *now*,
   which the reports say on the page.
@@ -266,4 +310,6 @@ recovery from corrupted storage, the public welcome page, and mobile layout.
 
 Next.js 16 (App Router) · React 19 · TypeScript strict · Tailwind CSS v4 · shadcn/ui on Base UI ·
 Zustand · React Hook Form + Zod · TanStack Table v9 · Recharts · Vitest · Playwright ·
-Drizzle ORM on Postgres (persistence groundwork; see [Database](#database-postgres--groundwork)).
+Drizzle ORM on Postgres · Better Auth (backend groundwork; see
+[Database](#database-postgres--groundwork) and
+[Authentication](#authentication-and-real-authorization--groundwork)).

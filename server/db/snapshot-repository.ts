@@ -1,9 +1,11 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, sql, type SQL } from "drizzle-orm";
 import type { z } from "zod";
 import { err, ok, type Result } from "@/lib/result";
 import {
   CONFLICT,
+  FULL_SCOPE,
   type AsyncSnapshotRepository,
+  type LoadScope,
   type VersionedSnapshot,
 } from "@/services/repositories/async-snapshot-repository";
 import { buildExportBundle, parseImportBundle } from "@/services/repositories/bundle";
@@ -194,12 +196,13 @@ export function createPostgresSnapshotRepository({
   async function loadCollection<T extends { id: string }>(
     name: CollectionName,
     report: LoadReport,
+    extra?: SQL | undefined,
   ): Promise<T[]> {
     const table = tableFor[name];
     const rows = await db
       .select({ data: table.data })
       .from(table)
-      .where(eq(table.churchId, churchId))
+      .where(extra ? and(eq(table.churchId, churchId), extra) : eq(table.churchId, churchId))
       // Without an explicit order Postgres may return rows in any order, which
       // would make a reload reshuffle every list in the interface. Ordering by
       // id keeps a load reproducible, which the reported figures depend on.
@@ -286,7 +289,7 @@ export function createPostgresSnapshotRepository({
   }
 
   return {
-    async load(): Promise<VersionedSnapshot> {
+    async load(scope: LoadScope = FULL_SCOPE): Promise<VersionedSnapshot> {
       const [church] = await db
         .select({ version: churches.version })
         .from(churches)
@@ -319,6 +322,17 @@ export function createPostgresSnapshotRepository({
       }
 
       const fallback = createSeed();
+
+      // The scope becomes SQL. `tasks: "none"` and `careRecords: false` skip
+      // their queries entirely, so a caller without the capability does not
+      // receive the rows at all — there is nothing to forget to filter later.
+      const taskFilter: SQL | undefined =
+        scope.tasks === "all"
+          ? undefined
+          : scope.tasks === "none"
+            ? sql`false`
+            : eq(tasks.assigneeId, scope.tasks.assigneeId);
+
       const [
         householdRows,
         groupRows,
@@ -333,10 +347,12 @@ export function createPostgresSnapshotRepository({
       ] = await Promise.all([
         loadCollection<ChurchSnapshot["households"][number]>("households", report),
         loadCollection<ChurchSnapshot["groups"][number]>("groups", report),
-        loadCollection<ChurchSnapshot["tasks"][number]>("tasks", report),
+        loadCollection<ChurchSnapshot["tasks"][number]>("tasks", report, taskFilter),
         loadCollection<ChurchSnapshot["sessions"][number]>("sessions", report),
         loadCollection<ChurchSnapshot["attendance"][number]>("attendance", report),
-        loadCollection<ChurchSnapshot["careRecords"][number]>("careRecords", report),
+        scope.careRecords
+          ? loadCollection<ChurchSnapshot["careRecords"][number]>("careRecords", report)
+          : Promise.resolve([]),
         loadCollection<ChurchSnapshot["templates"][number]>("templates", report),
         loadCollection<ChurchSnapshot["communications"][number]>("communications", report),
         loadCollection<ChurchSnapshot["team"][number]>("team", report),

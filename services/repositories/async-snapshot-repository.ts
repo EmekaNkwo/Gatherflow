@@ -15,8 +15,25 @@ import type { ExportBundle } from "./bundle";
  * fail validation are dropped and reported rather than throwing, and only the
  * collections that actually changed are written.
  */
+/**
+ * How much of a church a caller is allowed to read.
+ *
+ * This is applied in the query, not to the result: a scope without care
+ * records does not fetch the table at all, so restricted information never
+ * enters the process that would have to remember to drop it. Omit the scope
+ * to read everything, which is what a command needs in order to be correct.
+ */
+export interface LoadScope {
+  /** `false` leaves the care table unqueried. */
+  careRecords: boolean;
+  /** Every task, only one assignee's, or none at all. */
+  tasks: "all" | "none" | { assigneeId: string };
+}
+
+export const FULL_SCOPE: LoadScope = { careRecords: true, tasks: "all" };
+
 export interface AsyncSnapshotRepository {
-  load(): Promise<VersionedSnapshot>;
+  load(scope?: LoadScope): Promise<VersionedSnapshot>;
   /**
    * Commits a snapshot, guarded by the version the caller read.
    *
