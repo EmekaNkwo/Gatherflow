@@ -5,12 +5,7 @@ import { canViewCare } from "@/lib/permissions";
 import type { CareRecordId, IsoDate, PersonId } from "@/types/common";
 import type { CareStatus } from "@/types/care";
 import {
-  addCareNote,
-  createCareRecord,
   openCareRecords,
-  scheduleCareAppointment,
-  setAppointmentStatus,
-  updateCareRecord,
   type CreateCareRecordInput,
   type UpdateCareRecordInput,
 } from "@/services/care/care";
@@ -26,7 +21,7 @@ import { useCommand, useSnapshot } from "./use-church-data";
  */
 export function usePastoralCare() {
   const snapshot = useSnapshot();
-  const { run } = useCommand();
+  const { dispatch } = useCommand();
   const role = useSessionStore((state) => state.role);
   const authorised = canViewCare(role);
 
@@ -60,32 +55,31 @@ export function usePastoralCare() {
   }, [snapshot, authorised]);
 
   const create = useCallback(
-    (input: CreateCareRecordInput) => run((snap, ctx) => createCareRecord(snap, input, ctx)),
-    [run],
+    (input: CreateCareRecordInput) => dispatch("care.create", input),
+    [dispatch],
   );
 
   const update = useCallback(
     (recordId: CareRecordId, changes: UpdateCareRecordInput) =>
-      run((snap, ctx) => updateCareRecord(snap, recordId, changes, ctx)),
-    [run],
+      dispatch("care.update", { recordId, changes }),
+    [dispatch],
   );
 
   const setStatus = useCallback(
     (recordId: CareRecordId, status: CareStatus) =>
-      run((snap, ctx) => updateCareRecord(snap, recordId, { status }, ctx)),
-    [run],
+      dispatch("care.update", { recordId, changes: { status } }),
+    [dispatch],
   );
 
   const addNote = useCallback(
-    (recordId: CareRecordId, text: string) =>
-      run((snap, ctx) => addCareNote(snap, recordId, text, ctx)),
-    [run],
+    (recordId: CareRecordId, text: string) => dispatch("care.addNote", { recordId, text }),
+    [dispatch],
   );
 
   const scheduleAppointment = useCallback(
     (recordId: CareRecordId, input: { date: IsoDate; time: string; location?: string }) =>
-      run((snap, ctx) => scheduleCareAppointment(snap, recordId, input, ctx)),
-    [run],
+      dispatch("care.scheduleAppointment", { recordId, input }),
+    [dispatch],
   );
 
   const updateAppointment = useCallback(
@@ -93,8 +87,8 @@ export function usePastoralCare() {
       recordId: CareRecordId,
       appointmentId: string,
       status: "scheduled" | "completed" | "cancelled",
-    ) => run((snap, ctx) => setAppointmentStatus(snap, recordId, appointmentId, status, ctx)),
-    [run],
+    ) => dispatch("care.setAppointmentStatus", { recordId, appointmentId, status }),
+    [dispatch],
   );
 
   return {

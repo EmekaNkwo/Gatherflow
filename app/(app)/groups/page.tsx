@@ -122,8 +122,8 @@ export default function GroupsPage() {
       <CreateGroupDialog
         open={creating}
         onOpenChange={setCreating}
-        onConfirm={(values) => {
-          const outcome = create(values);
+        onConfirm={async (values) => {
+          const outcome = await create(values);
           if (outcome.ok) setCreating(false);
         }}
       />

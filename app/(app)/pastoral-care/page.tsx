@@ -242,8 +242,8 @@ export default function PastoralCarePage() {
         onOpenChange={setCreating}
         today={toIsoDate(now)}
         people={snapshot.people}
-        onConfirm={(values) => {
-          const outcome = care.create(values);
+        onConfirm={async (values) => {
+          const outcome = await care.create(values);
           if (outcome.ok) setCreating(false);
         }}
       />

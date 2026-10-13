@@ -527,7 +527,7 @@ export const COMMANDS = {
     schema: z.object({
       name: name,
       category: templateCategory,
-      channels: z.array(contactMethod).min(1),
+      channels: z.array(contactMethod).min(1).readonly(),
       body: z.string().min(1).max(5_000),
     }),
     run: createTemplate,
@@ -540,7 +540,7 @@ export const COMMANDS = {
       input: z.object({
         name: name,
         category: templateCategory,
-        channels: z.array(contactMethod).min(1),
+        channels: z.array(contactMethod).min(1).readonly(),
         body: z.string().min(1).max(5_000),
       }),
     }),

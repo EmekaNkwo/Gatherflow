@@ -11,13 +11,7 @@ import {
   type DraftMessageInput,
   type MessageDraft,
 } from "@/services/communications/messaging";
-import { logCommunication } from "@/services/communications/messaging";
-import {
-  createTemplate,
-  deleteTemplate,
-  updateTemplate,
-  type TemplateInput,
-} from "@/services/communications/templates";
+import { type TemplateInput } from "@/services/communications/templates";
 import { createCommandContext } from "@/services/core/context";
 import { useSessionStore } from "@/stores/session-store";
 import { useCommand, useSnapshot } from "./use-church-data";
@@ -33,7 +27,7 @@ import { useNow } from "./use-now";
 export function useCommunications() {
   const snapshot = useSnapshot();
   const now = useNow();
-  const { run } = useCommand();
+  const { dispatch } = useCommand();
   const teamMemberId = useSessionStore((state) => state.teamMemberId);
 
   const templates = useMemo(
@@ -72,8 +66,8 @@ export function useCommunications() {
       body: string;
       templateId?: TemplateId;
       taskId?: TaskId;
-    }) => run((snap, ctx) => logCommunication(snap, input, ctx)),
-    [run],
+    }) => dispatch("communication.log", input),
+    [dispatch],
   );
 
   /** Copies the message and records that it was copied. */
@@ -85,7 +79,7 @@ export function useCommunications() {
         toast.error("Could not reach the clipboard. Select the text and copy it manually.");
         return;
       }
-      log({
+      await log({
         personId: draft.personId,
         channel: draft.channel,
         status: "copied",
@@ -105,7 +99,7 @@ export function useCommunications() {
         return;
       }
       window.open(draft.externalLink, "_blank", "noopener,noreferrer");
-      log({
+      void log({
         personId: draft.personId,
         channel: draft.channel,
         status: "opened_external",
@@ -131,19 +125,19 @@ export function useCommunications() {
   );
 
   const addTemplate = useCallback(
-    (input: TemplateInput) => run((snap, ctx) => createTemplate(snap, input, ctx)),
-    [run],
+    (input: TemplateInput) => dispatch("template.create", input),
+    [dispatch],
   );
 
   const editTemplate = useCallback(
     (templateId: TemplateId, input: TemplateInput) =>
-      run((snap, ctx) => updateTemplate(snap, templateId, input, ctx)),
-    [run],
+      dispatch("template.update", { templateId, input }),
+    [dispatch],
   );
 
   const removeTemplate = useCallback(
-    (templateId: TemplateId) => run((snap) => deleteTemplate(snap, templateId)),
-    [run],
+    (templateId: TemplateId) => dispatch("template.delete", { templateId }),
+    [dispatch],
   );
 
   return {

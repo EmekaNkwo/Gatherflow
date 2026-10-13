@@ -70,13 +70,18 @@ export default function GuidedDemoPage() {
     (group) => group.active && group.type === "connect_group",
   );
 
-  const steps: Array<{ title: string; detail: string; action: () => void; disabled?: boolean }> = [
+  const steps: Array<{
+    title: string;
+    detail: string;
+    action: () => void | Promise<void>;
+    disabled?: boolean;
+  }> = [
     {
       title: "Register a first-time visitor",
       detail:
         "Creates a visitor record and records their attendance at the most recent service, so the visit count comes from a real attendance row.",
-      action: () => {
-        const outcome = visitors.register({
+      action: async () => {
+        const outcome = await visitors.register({
           firstName: "Testimony",
           lastName: `Demo${snapshot.people.length}`,
           phone: "+44 7700 900321",
@@ -99,9 +104,9 @@ export default function GuidedDemoPage() {
       detail:
         "Assigning somebody moves the visitor to “contact pending” and moves their open tasks with them.",
       disabled: !personId,
-      action: () => {
+      action: async () => {
         if (!personId) return;
-        const outcome = visitors.assign(personId, assignableTeam[0]?.id);
+        const outcome = await visitors.assign(personId, assignableTeam[0]?.id);
         record(1, outcome.ok, outcome.ok ? outcome.value.notices.join(" ") : outcome.error);
       },
     },
@@ -110,7 +115,7 @@ export default function GuidedDemoPage() {
       detail:
         "Prepares the first-time visitor welcome from the template and records it as a draft. Nothing is sent — GatherFlow has no backend to send with.",
       disabled: !personId,
-      action: () => {
+      action: async () => {
         if (!person) return;
         const template = snapshot.templates.find(
           (entry) => entry.category === "visitor_welcome",
@@ -121,7 +126,7 @@ export default function GuidedDemoPage() {
           templateId: template.id,
         });
         if (!prepared.ok) return record(2, false, prepared.error);
-        const outcome = communications.log({
+        const outcome = await communications.log({
           personId: person.id,
           channel: prepared.value.channel,
           status: "drafted",
@@ -136,9 +141,9 @@ export default function GuidedDemoPage() {
       detail:
         "Completing the welcome task with “successfully contacted” moves the visitor along the pipeline and creates the natural next action.",
       disabled: !openTask,
-      action: () => {
+      action: async () => {
         if (!openTask) return record(3, false, "There is no open task to complete.");
-        const outcome = followUps.complete(openTask.id, "contacted", "Spoke on the phone.");
+        const outcome = await followUps.complete(openTask.id, "contacted", "Spoke on the phone.");
         record(3, outcome.ok, outcome.ok ? outcome.value.notices.join(" ") : outcome.error);
       },
     },
@@ -147,7 +152,7 @@ export default function GuidedDemoPage() {
       detail:
         "A second attendance record triggers the return-visit rule: the journey moves to “Returned” and the next action is reviewed.",
       disabled: !personId,
-      action: () => {
+      action: async () => {
         if (!personId) return;
         const target = snapshot.sessions.find(
           (session) =>
@@ -157,7 +162,7 @@ export default function GuidedDemoPage() {
             ),
         );
         if (!target) return record(4, false, "No other session is available to check them in to.");
-        const outcome = attendance.checkIn(target.id, personId, "search");
+        const outcome = await attendance.checkIn(target.id, personId, "search");
         record(4, outcome.ok, outcome.ok ? outcome.value.notices.join(" ") : outcome.error);
       },
     },
@@ -166,9 +171,9 @@ export default function GuidedDemoPage() {
       detail:
         "Asking about membership creates an orientation task for the administrator — once, however many times the event is replayed.",
       disabled: !personId,
-      action: () => {
+      action: async () => {
         if (!personId) return;
-        const outcome = visitors.expressMembershipInterest(personId);
+        const outcome = await visitors.expressMembershipInterest(personId);
         record(5, outcome.ok, outcome.ok ? outcome.value.notices.join(" ") : outcome.error);
       },
     },
@@ -177,9 +182,9 @@ export default function GuidedDemoPage() {
       detail:
         "The same person id is kept, so their attendance, follow-up history and timeline all carry over.",
       disabled: !personId,
-      action: () => {
+      action: async () => {
         if (!personId) return;
-        const outcome = members.register({ personId, membershipDate: toIsoDate(now) });
+        const outcome = await members.register({ personId, membershipDate: toIsoDate(now) });
         record(6, outcome.ok, outcome.ok ? outcome.value.notices.join(" ") : outcome.error);
       },
     },
@@ -188,9 +193,9 @@ export default function GuidedDemoPage() {
       detail:
         "Group membership is always an explicit action, recorded against the person who made it. This also marks the visitor journey as connected.",
       disabled: !personId || !connectGroup,
-      action: () => {
+      action: async () => {
         if (!personId || !connectGroup) return;
-        const outcome = groups.addMember(connectGroup.id, personId);
+        const outcome = await groups.addMember(connectGroup.id, personId);
         record(7, outcome.ok, outcome.ok ? outcome.value.notices.join(" ") : outcome.error);
       },
     },
@@ -244,7 +249,7 @@ export default function GuidedDemoPage() {
                     size="sm"
                     variant={current ? "default" : "outline"}
                     disabled={entry.disabled}
-                    onClick={entry.action}
+                    onClick={() => void entry.action()}
                   >
                     Run this step
                   </Button>

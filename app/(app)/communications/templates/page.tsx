@@ -153,8 +153,10 @@ export default function TemplatesPage() {
             setEditing(null);
           }
         }}
-        onConfirm={(values) => {
-          const outcome = editing ? editTemplate(editing.id, values) : addTemplate(values);
+        onConfirm={async (values) => {
+          const outcome = editing
+            ? await editTemplate(editing.id, values)
+            : await addTemplate(values);
           if (outcome.ok) {
             setCreating(false);
             setEditing(null);
