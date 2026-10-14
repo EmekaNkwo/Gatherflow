@@ -68,6 +68,58 @@ export async function readChurch(context: ChurchContext): Promise<VersionedSnaps
  * narrow what the rules can reason about, or they would quietly draw the wrong
  * conclusion. What comes back is scoped again before it leaves.
  */
+/** The actor recorded when the server acts on a provider's report. */
+export const SYSTEM_ACTOR = "system" as TeamMemberId;
+
+/**
+ * Runs a command with no user session.
+ *
+ * Used for exactly one thing: applying what an email provider told us — a
+ * bounce, a complaint, an unsubscribe. There is no user to authorise, and
+ * refusing would mean ignoring somebody's explicit request not to be
+ * contacted, so there is no capability check here.
+ *
+ * It is deliberately a separate function rather than a flag on `runCommand`,
+ * so that every caller that skips authorisation is visible by name.
+ */
+export async function runSystemCommand(
+  db: Database,
+  churchId: string,
+  command: Command,
+): Promise<Result<CommandResult>> {
+  const repository = createPostgresSnapshotRepository({
+    db,
+    churchId,
+    createSeed: () => createSeedSnapshot(new Date()),
+  });
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    const current = await repository.load(FULL_SCOPE);
+    const ctx = createCommandContext({ actorId: SYSTEM_ACTOR });
+
+    const outcome = command(current.snapshot, ctx);
+    if (!outcome.ok) return outcome;
+
+    const automated = runAutomations(outcome.value.snapshot, outcome.value.events, ctx);
+    const saved = await repository.save(
+      current.snapshot,
+      automated.snapshot,
+      current.version,
+    );
+
+    if (saved.ok) {
+      return ok({
+        ...outcome.value,
+        snapshot: automated.snapshot,
+        notices: [...outcome.value.notices, ...automated.notices],
+      });
+    }
+    if (saved.code !== CONFLICT) return saved;
+  }
+
+  return err("Could not apply the provider's report; it will be retried.", CONFLICT);
+}
+
 export async function runCommand(
   context: ChurchContext,
   capability: Capability,

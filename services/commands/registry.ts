@@ -5,6 +5,7 @@ import type { CommandResult } from "@/services/core/events";
 import type { ChurchSnapshot } from "@/types/snapshot";
 import type { Capability } from "@/types/team";
 import { CONTACT_METHODS } from "@/types/common";
+import { MANUAL_COMMUNICATION_STATUSES } from "@/types/communication";
 import { MEMBERSHIP_STATUSES, VISITOR_SOURCES } from "@/types/person";
 import { FOLLOW_UP_TASK_TYPES, TASK_OUTCOMES, TASK_PRIORITIES } from "@/types/follow-up";
 import { SERVICE_TYPES } from "@/types/attendance";
@@ -152,12 +153,10 @@ const templateCategory = z.enum([
   "group_invitation",
   "general_check_in",
 ]);
-const communicationStatus = z.enum([
-  "drafted",
-  "copied",
-  "opened_external",
-  "simulated_sent",
-]);
+// Deliberately only the manual statuses. A request must not be able to claim
+// "delivered" or "sent"; those are written by the send pipeline from what the
+// provider actually reported.
+const communicationStatus = enumOf(MANUAL_COMMUNICATION_STATUSES);
 
 /**
  * A command, as both sides need to see it.

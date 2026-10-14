@@ -3,7 +3,7 @@
 import { useCallback, useMemo } from "react";
 import { toast } from "sonner";
 import type { ContactMethod, PersonId, TaskId, TemplateId } from "@/types/common";
-import type { CommunicationStatus } from "@/types/communication";
+import type { ManualCommunicationStatus } from "@/types/communication";
 import type { Result } from "@/lib/result";
 import {
   communicationsForPerson,
@@ -62,7 +62,7 @@ export function useCommunications() {
     (input: {
       personId: PersonId;
       channel: ContactMethod;
-      status: CommunicationStatus;
+      status: ManualCommunicationStatus;
       body: string;
       templateId?: TemplateId;
       taskId?: TaskId;

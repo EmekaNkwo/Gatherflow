@@ -15,6 +15,13 @@
       "when": 1791929464224,
       "tag": "0001_cynical_triton",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791934958842,
+      "tag": "0002_romantic_franklin_richards",
+      "breakpoints": true
     }
   ]
 }

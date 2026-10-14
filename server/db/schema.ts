@@ -289,6 +289,98 @@ export const churchMembers = pgTable(
   ],
 );
 
+/**
+ * The transactional outbox.
+ *
+ * A command that sends an email writes the communication record and a row here
+ * in the *same* transaction. Nothing is handed to the provider during the
+ * request: a worker drains this table afterwards. That ordering is what makes
+ * the two facts inseparable — there is no window in which the provider has
+ * accepted a message the church has no record of, or in which a record claims
+ * a send that never left.
+ *
+ * `custom_id` goes to Mailjet as its CustomID and comes back on every webhook
+ * event, which is how a provider report is matched to the row that caused it.
+ * It is unique, so a retry of the same row cannot produce a second send.
+ */
+export const messageOutbox = pgTable(
+  "message_outbox",
+  {
+    id: text("id").primaryKey(),
+    churchId: churchId(),
+    /** The `communications` record this send belongs to. */
+    communicationId: text("communication_id").notNull(),
+    personId: text("person_id").notNull(),
+    toEmail: text("to_email").notNull(),
+    subject: text("subject").notNull(),
+    htmlPart: text("html_part").notNull(),
+    textPart: text("text_part").notNull(),
+    customId: text("custom_id").notNull().unique(),
+    /** pending → sending → sent | failed */
+    status: text("status").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    lastError: text("last_error"),
+    mailjetMessageId: text("mailjet_message_id"),
+    mailjetMessageUuid: text("mailjet_message_uuid"),
+    /** Held by the worker that claimed the row, so two workers cannot race. */
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    lockedBy: text("locked_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // The worker's claim query: due, pending, oldest first.
+    index("outbox_due_idx").on(t.status, t.nextAttemptAt),
+    index("outbox_church_idx").on(t.churchId),
+    index("outbox_communication_idx").on(t.communicationId),
+  ],
+);
+
+/**
+ * Addresses this church must not email again, and why.
+ *
+ * Scoped to the church because an unsubscribe is a statement about *this*
+ * relationship, not about the mailbox. Mailjet keeps its own account-wide
+ * exclusion list for genuinely dead addresses, so the two layers cover the
+ * two different meanings between them.
+ */
+export const emailSuppression = pgTable(
+  "email_suppression",
+  {
+    churchId: churchId(),
+    email: text("email").notNull(),
+    /** bounced | blocked | spam | unsubscribed */
+    reason: text("reason").notNull(),
+    detail: text("detail"),
+    eventAt: timestamp("event_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.churchId, t.email] }),
+    index("suppression_email_idx").on(t.email),
+  ],
+);
+
+/**
+ * Provider events already applied, so replaying one changes nothing.
+ *
+ * Mailjet does not sign its webhooks and will retry, so the endpoint has to
+ * assume it may be called twice with the same event — or by somebody who
+ * captured one.
+ */
+export const webhookEvents = pgTable(
+  "webhook_events",
+  {
+    /** Deterministic from the event's own fields; see `eventKey`. */
+    id: text("id").primaryKey(),
+    provider: text("provider").notNull(),
+    event: text("event").notNull(),
+    outboxId: text("outbox_id"),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("webhook_events_outbox_idx").on(t.outboxId)],
+);
+
 /** Collection tables, keyed by the snapshot property they persist. */
 export const collectionTables = {
   people,

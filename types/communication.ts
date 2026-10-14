@@ -60,21 +60,80 @@ export interface MessageTemplate {
 }
 
 /**
- * What actually happened with a message. The application can never confirm
- * external delivery, so there is deliberately no `delivered` state.
+ * What actually happened with a message.
+ *
+ * Two groups, and the distinction matters. The *manual* statuses describe what
+ * a person did with a draft: the application handed it over and cannot know
+ * any more than that. The *email* statuses describe a real send through a
+ * provider, and each one corresponds to something the provider actually told
+ * us — none is inferred.
+ *
+ * `sent` means our provider accepted the request. `delivered` means the
+ * receiving mail server accepted the message, which is the strongest claim
+ * available: Mailjet reports it as its `sent` event, and there is no later
+ * "the human read it" signal that could honestly be recorded.
  */
-export type CommunicationStatus =
+export type ManualCommunicationStatus =
   | "drafted"
   | "copied"
   | "opened_external"
   | "simulated_sent";
+
+export type EmailCommunicationStatus =
+  | "queued"
+  | "sent"
+  | "delivered"
+  | "bounced"
+  | "blocked"
+  | "spam"
+  | "unsubscribed"
+  | "failed";
+
+export type CommunicationStatus = ManualCommunicationStatus | EmailCommunicationStatus;
+
+/** The statuses a person's own action can produce; the rest are the server's. */
+export const MANUAL_COMMUNICATION_STATUSES: readonly ManualCommunicationStatus[] = [
+  "drafted",
+  "copied",
+  "opened_external",
+  "simulated_sent",
+];
+
+export const EMAIL_COMMUNICATION_STATUSES: readonly EmailCommunicationStatus[] = [
+  "queued",
+  "sent",
+  "delivered",
+  "bounced",
+  "blocked",
+  "spam",
+  "unsubscribed",
+  "failed",
+];
 
 export const COMMUNICATION_STATUS_LABELS: Record<CommunicationStatus, string> = {
   drafted: "Draft prepared",
   copied: "Copied to clipboard",
   opened_external: "Opened in external app",
   simulated_sent: "Simulated send",
+  queued: "Queued to send",
+  sent: "Sent to the provider",
+  delivered: "Delivered to their mail server",
+  bounced: "Bounced",
+  blocked: "Blocked by their mail server",
+  spam: "Reported as spam",
+  unsubscribed: "Unsubscribed",
+  failed: "Could not be sent",
 };
+
+/** Statuses that end the attempt: nothing further will happen. */
+export const TERMINAL_EMAIL_STATUSES: readonly EmailCommunicationStatus[] = [
+  "delivered",
+  "bounced",
+  "blocked",
+  "spam",
+  "unsubscribed",
+  "failed",
+];
 
 export interface CommunicationLogEntry {
   id: string;
@@ -86,6 +145,10 @@ export interface CommunicationLogEntry {
   body: string;
   at: IsoDateTime;
   actorId: TeamMemberId;
-  /** Always true in this portfolio build; rendered as an explicit badge. */
-  simulated: true;
+  /**
+   * `true` when nothing left the building — a draft, a copy, or a simulated
+   * send. A real provider send records `false`, and the interface badges the
+   * two differently so a reader is never misled about what happened.
+   */
+  simulated: boolean;
 }

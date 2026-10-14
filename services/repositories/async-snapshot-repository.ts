@@ -45,11 +45,28 @@ export interface AsyncSnapshotRepository {
     previous: ChurchSnapshot | null,
     next: ChurchSnapshot,
     expectedVersion: number,
+    options?: SaveOptions,
   ): Promise<Result<number>>;
   /** Wipes the church's data and writes a fresh seed. */
   reset(): Promise<VersionedSnapshot>;
   exportBundle(snapshot: ChurchSnapshot): ExportBundle;
   importBundle(raw: unknown, current: ChurchSnapshot): Result<ChurchSnapshot>;
+}
+
+export interface SaveOptions {
+  /**
+   * Extra work to perform inside the commit's own transaction.
+   *
+   * This exists for the transactional outbox: an email's queue row has to be
+   * written with the record that caused it or not at all, otherwise there is a
+   * window where a message is queued against a change that was rolled back —
+   * or a change is committed whose email silently vanished.
+   *
+   * The handle is whatever the implementation uses for a transaction, so the
+   * caller must know which repository it is talking to. That is deliberate:
+   * enlisting in someone else's transaction is not a thing to do casually.
+   */
+  enlist?: (tx: unknown) => Promise<void>;
 }
 
 export interface VersionedSnapshot {

@@ -234,8 +234,72 @@ ordinary refusal instead of an exception.
 ```bash
 # BETTER_AUTH_SECRET and BETTER_AUTH_URL as well as DATABASE_URL — see .env.example
 npm run db:migrate
-npm run test:db     # 32 server tests: persistence, authorisation, input validation
+npm run test:db     # 45 server tests: persistence, authorisation, input, email
 ```
+
+---
+
+### Sending email — groundwork
+
+> **No screen sends anything yet.** The pipeline below is implemented and
+> tested; what is missing is the interface that calls it. With no Mailjet
+> credentials configured the application behaves exactly as before: it drafts,
+> copies and hands messages to an app you already have.
+
+Real sending changes what the application is allowed to claim, so the design
+starts from what a provider can actually tell us.
+
+**Nothing is sent during a request.** `sendTemplatedEmail` writes the
+communication record and a `message_outbox` row in the *same transaction*
+(`SaveOptions.enlist`), and returns. A worker sends afterwards. There is no
+window in which the provider has accepted a message the church has no record
+of, or a record claims a send that never left — a test asserts the whole commit
+rolls back if the queue row cannot be written.
+
+**Three things are checked before anything is queued**, in one place so no
+caller can forget: consent, an address, and that the address is not on this
+church's suppression list.
+
+**The statuses mean what they say.** `queued` is ours. `sent` means Mailjet
+accepted the request. `delivered` means the receiving mail server accepted the
+message — Mailjet reports that as its `sent` event, and it is the strongest
+claim available. `bounced`, `blocked`, `spam`, `unsubscribed` and `failed` are
+all things a provider told us. A request can only ever log the *manual*
+statuses; the pipeline statuses are written by the server.
+
+**Opens and clicks are deliberately not recorded.** Knowing whether somebody
+opened a pastoral message is more than a church needs and more than this
+application should store, so those events are accepted and discarded.
+
+**Webhooks are built for a provider that does not sign them.** Mailjet offers
+only a secret URL, so: the secret lives in the path and is compared in constant
+time; a mismatch returns 404 so probing cannot tell a wrong secret from a wrong
+path; nothing in the payload is trusted beyond *identifying* a row we already
+created, so a forged event cannot introduce a record; and every event is keyed
+by its own contents, so a retry — or a captured replay — is a no-op.
+
+**A bounce or complaint ends the relationship properly.** The address is
+suppressed for that church and the person is opted out through the same
+`setContactPreferences` command the interface uses, which also cancels their
+open follow-up work. Writing the flag directly would have skipped that.
+
+**Failures back off and then stop.** A 5xx, 429 or dropped connection is
+retried with doubling delay; any other 4xx is permanent, because the same
+request will be wrong next time. After five attempts the row is `failed` and
+visible rather than looping. Rows abandoned by a dead worker are reclaimed.
+Every timestamp in the queue comes from the database, never from the caller's
+clock — two instances have no shared "now" to agree on.
+
+```bash
+# Unset MAILJET_* and the application just does not offer to send.
+curl -XPOST -H "authorization: Bearer $CRON_SECRET" localhost:3000/api/cron/drain-outbox
+```
+
+| Table | Holds |
+| --- | --- |
+| `message_outbox` | Queued sends, attempts, backoff, provider ids |
+| `email_suppression` | Addresses this church must not write to again, and why |
+| `webhook_events` | Events already applied, so a replay changes nothing |
 
 ---
 
@@ -275,7 +339,7 @@ access: configuring the system and reading people's care notes are different job
 
 ### Simulated messaging
 
-GatherFlow never sends anything. It drafts a message, copies it to your clipboard, or hands it to
+With no email provider configured, GatherFlow never sends anything. It drafts a message, copies it to your clipboard, or hands it to
 an app you already have (`wa.me`, `sms:`, `mailto:`), always on an explicit click. The
 communication log records exactly which of those happened — *drafted*, *copied*, *opened
 externally* or *simulated send*. There is no "delivered" status, because the application cannot
@@ -302,8 +366,8 @@ verify delivery and should not claim it.
 ## Testing
 
 ```bash
-npm test        # 128 unit tests (+28 server tests when TEST_DATABASE_URL is set)
-npm run test:db # the 28 server integration tests on their own
+npm test        # 147 unit tests (+45 server tests when TEST_DATABASE_URL is set)
+npm run test:db # the 45 server integration tests on their own
 npm run e2e     # 13 end-to-end tests
 ```
 

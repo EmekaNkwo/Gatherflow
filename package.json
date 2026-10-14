@@ -10,7 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:db": "node --env-file=.env.local ./node_modules/vitest/vitest.mjs run server/db",
+    "test:db": "node --env-file=.env.local ./node_modules/vitest/vitest.mjs run server",
     "typecheck": "tsc --noEmit",
     "e2e": "playwright test",
     "db:generate": "drizzle-kit generate",

@@ -380,7 +380,7 @@ export function createPostgresSnapshotRepository({
       };
     },
 
-    async save(previous, next, expectedVersion): Promise<Result<number>> {
+    async save(previous, next, expectedVersion, options): Promise<Result<number>> {
       try {
         return await db.transaction(async (tx) => {
           // The guard and the increment are the same statement, so two
@@ -417,6 +417,11 @@ export function createPostgresSnapshotRepository({
                 });
             }
           }
+
+          // Inside the same transaction, after the church is consistent: a
+          // queued email is written with the record that caused it or not at
+          // all. Throwing here rolls the whole commit back.
+          if (options?.enlist) await options.enlist(scoped);
 
           return ok(bumped[0].version);
         });
