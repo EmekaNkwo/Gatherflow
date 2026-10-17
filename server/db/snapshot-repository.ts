@@ -8,7 +8,6 @@ import {
   type LoadScope,
   type VersionedSnapshot,
 } from "@/services/repositories/async-snapshot-repository";
-import { buildExportBundle, parseImportBundle } from "@/services/repositories/bundle";
 import { SCHEMA_VERSION, type LoadReport } from "@/services/repositories/collection";
 import {
   churchSettingsSchema,
@@ -62,6 +61,22 @@ export interface PostgresSnapshotRepositoryOptions {
   db: Database;
   churchId: string;
   createSeed: () => ChurchSnapshot;
+  /**
+   * What to do when the church row does not exist. `"seed"` creates it from
+   * `createSeed` — how a church comes into being when somebody signs up, and
+   * how tests get a populated one. An operator's backup must never create
+   * anything: with `"refuse"` the load throws `ChurchNotReadyError` instead.
+   */
+  whenEmpty?: "seed" | "refuse";
+}
+
+/** Thrown by a `whenEmpty: "refuse"` repository instead of seeding. */
+export class ChurchNotReadyError extends Error {
+  readonly code = "not_found";
+  constructor(churchId: string, reason: string) {
+    super(`Church ${churchId} ${reason}.`);
+    this.name = "ChurchNotReadyError";
+  }
 }
 
 /**
@@ -188,7 +203,13 @@ export function createPostgresSnapshotRepository({
   db,
   churchId,
   createSeed,
+  whenEmpty = "seed",
 }: PostgresSnapshotRepositoryOptions): AsyncSnapshotRepository {
+  function seedOrRefuse(reason: string): Promise<VersionedSnapshot> {
+    if (whenEmpty === "refuse") throw new ChurchNotReadyError(churchId, reason);
+    return seed();
+  }
+
   /**
    * Reads one collection, dropping rows whose `data` no longer satisfies the
    * schema and reporting how many were lost.
@@ -295,7 +316,7 @@ export function createPostgresSnapshotRepository({
         .from(churches)
         .where(eq(churches.id, churchId));
 
-      if (!church) return seed();
+      if (!church) return seedOrRefuse("does not exist");
 
       const report: LoadReport = { dropped: 0, issues: [] };
 
@@ -314,14 +335,10 @@ export function createPostgresSnapshotRepository({
         report,
       );
 
-      // People and settings are the backbone: without them there is nothing
-      // meaningful to restore, so a fresh seed is written instead of a half
-      // state. This matches the browser repository exactly.
-      if (loadedPeople.length === 0 || !settings?.success) {
-        return seed();
-      }
-
-      const fallback = createSeed();
+      // A church with no people is simply a new church. Settings that cannot
+      // be read fall back to the defaults and are reported, never replaced
+      // wholesale: a bad settings row must not cost a church its records.
+      // `createSeed` is only consulted for those defaults, and only then.
 
       // The scope becomes SQL. `tasks: "none"` and `careRecords: false` skip
       // their queries entirely, so a caller without the capability does not
@@ -362,16 +379,16 @@ export function createPostgresSnapshotRepository({
       return {
         snapshot: {
           people: loadedPeople,
-          settings: settings.data,
+          settings: settings?.success ? settings.data : createSeed().settings,
           households: householdRows,
           groups: groupRows,
           tasks: taskRows,
           sessions: sessionRows,
           attendance: attendanceRows,
           careRecords: careRows,
-          templates: templateRows.length ? templateRows : fallback.templates,
+          templates: templateRows,
           communications: communicationRows,
-          team: teamRows.length ? teamRows : fallback.team,
+          team: teamRows,
           activity: activityRows,
         },
         version: church.version,
@@ -438,12 +455,5 @@ export function createPostgresSnapshotRepository({
       return seed();
     },
 
-    exportBundle(snapshot) {
-      return buildExportBundle(snapshot, new Date().toISOString());
-    },
-
-    importBundle(raw, current) {
-      return parseImportBundle(raw, current);
-    },
   };
 }

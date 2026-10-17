@@ -1,32 +1,54 @@
 "use client";
 
 import { useEffect, type ReactNode } from "react";
+import { useRouter } from "next/navigation";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useChurchStore } from "@/stores/church-store";
 import { useSessionStore } from "@/stores/session-store";
 
 /**
- * Loads church data from browser storage before any feature renders.
- *
- * Storage only exists in the browser, so hydration happens in an effect and
- * the shell shows skeletons until the data is ready. Feature hooks can then
- * assume a snapshot exists rather than each handling a null case.
+ * Loads the church from the server before any feature renders, and sends
+ * the person where they need to be when it cannot: to sign in, to choose a
+ * church, or to set one up. Feature hooks can then assume a snapshot exists
+ * rather than each handling a null case.
  */
+const REDIRECTS: Record<string, string> = {
+  unauthenticated: "/sign-in",
+  church_required: "/choose-church",
+  no_membership: "/onboarding",
+};
+
 export function ChurchDataProvider({ children }: { children: ReactNode }) {
-  const hydrateChurch = useChurchStore((state) => state.hydrate);
-  const hydrateSession = useSessionStore((state) => state.hydrate);
-  const ready = useChurchStore((state) => state.status === "ready" && state.snapshot !== null);
+  const router = useRouter();
+  const hydrate = useChurchStore((state) => state.hydrate);
+  const loaded = useChurchStore((state) => state.status === "ready" && state.snapshot !== null);
   const loadError = useChurchStore((state) => state.loadError);
+  const loadErrorCode = useChurchStore((state) => state.loadErrorCode);
+  const actingAs = useChurchStore((state) => state.actingAs);
+  const resolved = useSessionStore((state) => state.resolved);
+  const adoptServerSession = useSessionStore((state) => state.adoptServerSession);
 
   useEffect(() => {
-    hydrateSession();
-    void hydrateChurch();
-  }, [hydrateChurch, hydrateSession]);
+    void hydrate();
+  }, [hydrate]);
 
-  // In server-backed mode the church may genuinely be unreachable. Saying so
-  // beats a skeleton that never resolves, and inventing an empty church would
-  // invite somebody to edit a fiction.
-  if (loadError) return <UnavailableShell message={loadError} />;
+  // The interface's advisory role is the server's answer. Nothing renders
+  // against it until it has been adopted, so no button is ever offered on
+  // the strength of a role the server did not grant.
+  useEffect(() => {
+    if (actingAs) adoptServerSession(actingAs.role, actingAs.teamMemberId);
+  }, [actingAs, adoptServerSession]);
+  const ready = loaded && resolved;
+
+  const redirect = loadErrorCode ? REDIRECTS[loadErrorCode] : undefined;
+  useEffect(() => {
+    if (redirect) router.replace(redirect);
+  }, [redirect, router]);
+
+  // The church may genuinely be unreachable. Saying so beats a skeleton that
+  // never resolves, and inventing an empty church would invite somebody to
+  // edit a fiction.
+  if (loadError && !redirect) return <UnavailableShell message={loadError} />;
 
   if (!ready) return <LoadingShell />;
 

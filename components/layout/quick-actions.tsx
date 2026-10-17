@@ -18,7 +18,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useDemoRole } from "@/hooks/useDemoRole";
+import { useRole } from "@/hooks/useRole";
 import type { Capability } from "@/types/team";
 
 interface QuickAction {
@@ -52,7 +52,7 @@ const ACTIONS: readonly QuickAction[] = [
     capability: "people.write",
   },
   {
-    label: "Record attendance",
+    label: "Check people in",
     description: "Check people in to a service",
     href: "/attendance",
     icon: CalendarPlusIcon,
@@ -76,7 +76,7 @@ const ACTIONS: readonly QuickAction[] = [
 
 /** The one-click actions a volunteer needs on a busy service day. */
 export function QuickActions() {
-  const { can } = useDemoRole();
+  const { can } = useRole();
   const available = ACTIONS.filter((action) => can(action.capability));
 
   if (!available.length) return null;
@@ -87,12 +87,12 @@ export function QuickActions() {
         render={
           <Button size="sm" className="gap-1.5">
             <PlusIcon />
-            <span className="hidden sm:inline">Quick action</span>
+            <span>New</span>
           </Button>
         }
       />
       <DropdownMenuContent align="end" className="w-72">
-        <DropdownMenuLabel>Quick actions</DropdownMenuLabel>
+        <DropdownMenuLabel>Add something new</DropdownMenuLabel>
         <DropdownMenuSeparator />
         {available.map((action) => (
           <DropdownMenuItem key={action.href} render={<Link href={action.href} />}>

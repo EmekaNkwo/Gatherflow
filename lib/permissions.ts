@@ -1,11 +1,11 @@
 import type { Capability, DemoRole } from "@/types/team";
 
 /**
- * Simulated role model.
+ * The capability map.
  *
- * These checks shape the demo interface only. They run in the browser, where
- * anyone can change them, and must never be mistaken for access control —
- * production deployments have to enforce this on a server.
+ * One table, used by both sides: the interface reads it to decide what to
+ * offer, the server reads it to decide what to allow. A capability added to
+ * a role is added once, and the two can never disagree.
  */
 const ROLE_CAPABILITIES: Record<DemoRole, readonly Capability[]> = {
   administrator: [
@@ -79,7 +79,7 @@ export function canViewCare(role: DemoRole): boolean {
 
 /**
  * Whether the role sees every task or only its own. Volunteers intentionally
- * see a narrower pipeline so the demo shows a real difference per role.
+ * see a narrower pipeline: their own work, not the church's.
  */
 export function taskScope(role: DemoRole): "all" | "own" | "none" {
   if (can(role, "tasks.read.all")) return "all";

@@ -36,6 +36,8 @@ function statusFor(code: string | undefined): number {
       return 404;
     case "conflict":
       return 409;
+    case "rate_limited":
+      return 429;
     case "invalid_input":
     case "unknown_command":
       return 400;

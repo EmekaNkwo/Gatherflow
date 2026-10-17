@@ -95,7 +95,7 @@ describe("draftMessage", () => {
         id: `comm_${index}`,
         personId: "person_visitor",
         channel: "whatsapp" as const,
-        status: "simulated_sent" as const,
+        status: "opened_external" as const,
         body: "Hello",
         at: "2026-10-10T09:00:00.000Z",
         actorId: "tm_coord_grace",
@@ -163,7 +163,7 @@ describe("logCommunication", () => {
     });
     const outcome = logCommunication(
       base([optedOut]),
-      { personId: "person_visitor", channel: "sms", status: "simulated_sent", body: "Hi" },
+      { personId: "person_visitor", channel: "sms", status: "opened_external", body: "Hi" },
       ctx(),
     );
 

@@ -13,22 +13,27 @@ import {
 } from "@/services/communications/messaging";
 import { type TemplateInput } from "@/services/communications/templates";
 import { createCommandContext } from "@/services/core/context";
+import { useChurchStore } from "@/stores/church-store";
 import { useSessionStore } from "@/stores/session-store";
+import type { SendEmailRequest } from "@/types/email";
 import { useCommand, useSnapshot } from "./use-church-data";
 import { useNow } from "./use-now";
 
 /**
- * Message drafting and the communication log.
+ * Message drafting, real email, and the communication log.
  *
- * Nothing here sends anything. Messages are drafted, copied or handed to an
- * app the user already has, and the log records exactly which of those
- * happened — it never claims delivery.
+ * Drafts are copied or handed to an app the user already has, and the log
+ * records exactly which of those happened. Real email exists only in the
+ * server-backed mode, and only when the deployment has switched it on; the
+ * log then records what the provider actually reported, never more.
  */
 export function useCommunications() {
   const snapshot = useSnapshot();
   const now = useNow();
   const { dispatch } = useCommand();
   const teamMemberId = useSessionStore((state) => state.teamMemberId);
+  const email = useChurchStore((state) => state.email);
+  const sendEmailCommand = useChurchStore((state) => state.sendEmail);
 
   const templates = useMemo(
     () => [...snapshot.templates].sort((left, right) => left.name.localeCompare(right.name)),
@@ -54,7 +59,7 @@ export function useCommunications() {
    */
   const prepare = useCallback(
     (input: DraftMessageInput): Result<MessageDraft> =>
-      draftMessage(snapshot, input, createCommandContext({ actorId: teamMemberId, now })),
+      draftMessage(snapshot, input, createCommandContext({ actorId: teamMemberId ?? "", now })),
     [snapshot, teamMemberId, now],
   );
 
@@ -111,17 +116,24 @@ export function useCommunications() {
     [log],
   );
 
-  const simulateSend = useCallback(
-    (draft: MessageDraft, taskId?: TaskId) =>
-      log({
-        personId: draft.personId,
-        channel: draft.channel,
-        status: "simulated_sent",
-        body: draft.body,
-        templateId: draft.templateId,
-        taskId,
-      }),
-    [log],
+  /**
+   * Queues a real email through the server. The toast says "queued", not
+   * "sent": the worker sends it afterwards and the record's status follows
+   * what the provider reports.
+   */
+  const sendEmail = useCallback(
+    async (input: SendEmailRequest) => {
+      const outcome = await sendEmailCommand(input);
+      if (!outcome.ok) {
+        toast.error(outcome.error);
+        return outcome;
+      }
+      toast.success("Email queued", {
+        description: `It will be sent to ${outcome.value.toEmail} within a few minutes.`,
+      });
+      return outcome;
+    },
+    [sendEmailCommand],
   );
 
   const addTemplate = useCallback(
@@ -143,11 +155,12 @@ export function useCommunications() {
   return {
     templates,
     history,
+    email,
     prepare,
     log,
+    sendEmail,
     copyAndLog,
     openExternally,
-    simulateSend,
     addTemplate,
     editTemplate,
     removeTemplate,

@@ -18,7 +18,7 @@ import { useNow } from "./use-now";
 /**
  * Follow-up tasks.
  *
- * The task list is scoped by the active demo role: volunteers only ever see
+ * The task list is scoped by the signed-in role: volunteers only ever see
  * their own work, coordinators and administrators see everything.
  */
 export function useFollowUps(filters: TaskFilters = {}) {
@@ -31,7 +31,7 @@ export function useFollowUps(filters: TaskFilters = {}) {
   const scope = taskScope(role);
 
   const scopedFilters = useMemo<TaskFilters>(() => {
-    if (scope === "own") return { ...filters, assigneeId: teamMemberId };
+    if (scope === "own") return { ...filters, assigneeId: teamMemberId ?? undefined };
     return filters;
   }, [filters, scope, teamMemberId]);
 
@@ -41,7 +41,10 @@ export function useFollowUps(filters: TaskFilters = {}) {
   );
 
   const counts = useMemo(() => {
-    const all = scope === "none" ? [] : selectTasks(snapshot, scope === "own" ? { assigneeId: teamMemberId } : {}, now);
+    const all =
+      scope === "none"
+        ? []
+        : selectTasks(snapshot, scope === "own" ? { assigneeId: teamMemberId ?? undefined } : {}, now);
     return {
       open: all.filter((entry) =>
         ["pending", "in_progress", "rescheduled"].includes(entry.task.status),

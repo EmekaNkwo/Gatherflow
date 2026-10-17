@@ -15,7 +15,7 @@ import { useCommand, useSnapshot } from "./use-church-data";
 /**
  * Restricted pastoral-care workflow.
  *
- * When the active demo role cannot read care records, this hook returns
+ * When the signed-in role cannot read care records, this hook returns
  * nothing at all — the UI has no data to leak, rather than relying on the
  * page to remember to hide it.
  */

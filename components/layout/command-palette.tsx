@@ -10,6 +10,8 @@ import {
   UsersRoundIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useRole } from "@/hooks/useRole";
+import type { Capability } from "@/types/team";
 import {
   Command,
   CommandDialog,
@@ -35,9 +37,30 @@ const KIND_LABELS: Record<string, string> = {
  * Keyboard-first search and quick actions.
  *
  * Results come from the search service, which scopes them to the active
- * demo role — a volunteer will not find other people's tasks here.
+ * signed-in role — a volunteer will not find other people's tasks here.
  */
+/** Shortcuts offered before anything is typed, each only to the roles that can use it. */
+const SHORTCUTS: ReadonlyArray<{
+  value: string;
+  label: string;
+  href: string;
+  icon: typeof UserPlusIcon;
+  allowed: (can: (capability: Capability) => boolean) => boolean;
+}> = [
+  { value: "welcome", label: "Welcome someone new", href: "/visitors/quick", icon: UserPlusIcon, allowed: (can) => can("visitors.write") },
+  { value: "check-in", label: "Check-in", href: "/attendance", icon: CalendarPlusIcon, allowed: (can) => can("attendance.write") },
+  {
+    value: "waiting",
+    label: "Follow-ups still waiting",
+    href: "/follow-ups/tasks?due=overdue",
+    icon: ClipboardListIcon,
+    allowed: (can) => can("tasks.read.all"),
+  },
+  { value: "groups", label: "Groups", href: "/groups", icon: UsersRoundIcon, allowed: (can) => can("tasks.read.all") },
+];
+
 export function CommandPalette() {
+  const { can } = useRole();
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const { query, setQuery, grouped, hasQuery, searching } = useGlobalSearch();
@@ -64,11 +87,12 @@ export function CommandPalette() {
       <Button
         variant="outline"
         size="sm"
-        className="w-full justify-start gap-2 text-muted-foreground sm:w-64"
+        aria-label="Search people and follow-ups"
+        className="size-10 justify-center rounded-full text-muted-foreground sm:h-9 sm:w-64 sm:justify-start sm:rounded-lg"
         onClick={() => setOpen(true)}
       >
         <SearchIcon />
-        <span className="flex-1 text-left">Search people, tasks…</span>
+        <span className="sr-only flex-1 text-left sm:not-sr-only">Search people…</span>
         <Kbd className="hidden sm:inline-flex">Ctrl K</Kbd>
       </Button>
 
@@ -79,7 +103,7 @@ export function CommandPalette() {
         description="Search visitors, members, tasks, groups and services."
       >
         {/* Filtering is done by the search service, which also applies the
-            demo role's scope, so cmdk's own filter stays off. */}
+            signed-in role's scope, so cmdk's own filter stays off. */}
         <Command shouldFilter={false}>
           <CommandInput
           placeholder="Search people, tasks, groups…"
@@ -110,27 +134,13 @@ export function CommandPalette() {
 
           {!hasQuery ? (
             <>
-              <CommandGroup heading="Quick actions">
-                <CommandItem value="register-visitor" onSelect={() => go("/visitors/new")}>
-                  <UserPlusIcon />
-                  Register a visitor
-                </CommandItem>
-                <CommandItem value="quick-register" onSelect={() => go("/visitors/quick")}>
-                  <UserPlusIcon />
-                  Quick registration (several visitors)
-                </CommandItem>
-                <CommandItem value="record-attendance" onSelect={() => go("/attendance")}>
-                  <CalendarPlusIcon />
-                  Record attendance
-                </CommandItem>
-                <CommandItem value="overdue" onSelect={() => go("/follow-ups/tasks?due=overdue")}>
-                  <ClipboardListIcon />
-                  Review overdue follow-ups
-                </CommandItem>
-                <CommandItem value="groups" onSelect={() => go("/groups")}>
-                  <UsersRoundIcon />
-                  Groups & ministries
-                </CommandItem>
+              <CommandGroup heading="Go to">
+                {SHORTCUTS.filter((shortcut) => shortcut.allowed(can)).map((shortcut) => (
+                  <CommandItem key={shortcut.value} value={shortcut.value} onSelect={() => go(shortcut.href)}>
+                    <shortcut.icon />
+                    {shortcut.label}
+                  </CommandItem>
+                ))}
               </CommandGroup>
               <CommandSeparator />
               <CommandGroup heading="Tip">

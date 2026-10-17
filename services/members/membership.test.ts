@@ -261,7 +261,7 @@ describe("record correction and deletion", () => {
           id: "comm_1",
           personId: "person_visitor",
           channel: "whatsapp",
-          status: "simulated_sent",
+          status: "opened_external",
           body: "Hello",
           at: "2026-10-06T09:00:00.000Z",
           actorId: TEAM_IDS.coordinator,

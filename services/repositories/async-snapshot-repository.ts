@@ -1,7 +1,6 @@
 import type { Result } from "@/lib/result";
 import type { ChurchSnapshot } from "@/types/snapshot";
 import type { LoadReport } from "./collection";
-import type { ExportBundle } from "./bundle";
 
 /**
  * The persistence seam for a networked store.
@@ -47,10 +46,8 @@ export interface AsyncSnapshotRepository {
     expectedVersion: number,
     options?: SaveOptions,
   ): Promise<Result<number>>;
-  /** Wipes the church's data and writes a fresh seed. */
+  /** Wipes the church's data and writes a fresh one from `createSeed`. */
   reset(): Promise<VersionedSnapshot>;
-  exportBundle(snapshot: ChurchSnapshot): ExportBundle;
-  importBundle(raw: unknown, current: ChurchSnapshot): Result<ChurchSnapshot>;
 }
 
 export interface SaveOptions {
@@ -73,7 +70,7 @@ export interface VersionedSnapshot {
   snapshot: ChurchSnapshot;
   /** The value a subsequent `save` must present as its guard. */
   version: number;
-  /** `true` when seed data was written because nothing valid was stored. */
+  /** `true` when the church did not exist and was just created. */
   seeded: boolean;
   report: LoadReport;
 }

@@ -24,12 +24,12 @@ export default function AllTasksPage() {
 
   return (
     <TasksView
-      title="Follow-up tasks"
-      description="Every task the active demo role is allowed to see. Volunteers see only their own."
+      title="Everyone's follow-ups"
+      description="Who the church is reaching out to, and who is doing it."
       baseFilters={baseFilters}
       lockDue={Boolean(baseFilters.due)}
-      emptyTitle="No follow-up tasks yet"
-      emptyDescription="Tasks appear here when a visitor is registered, when someone returns, or when you create one."
+      emptyTitle="No follow-ups yet"
+      emptyDescription="They appear when a visitor is registered, when somebody comes back, or when you add one."
     />
   );
 }

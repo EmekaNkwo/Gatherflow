@@ -1,27 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import { PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { ChevronRightIcon, PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
-import { RestrictedState } from "@/components/shared/empty-state";
-import { PageHeader, PageShell } from "@/components/shared/page-header";
-import { SimulatedBadge } from "@/components/shared/badges";
+import { EmptyState, RestrictedState } from "@/components/shared/empty-state";
+import { PageHeader, PageShell, Section } from "@/components/shared/page-header";
 import { renderTemplate } from "@/services/communications/template-engine";
 import { CONTACT_METHODS, CONTACT_METHOD_LABELS, type ContactMethod } from "@/types/common";
 import {
@@ -31,17 +21,37 @@ import {
   type TemplateCategory,
 } from "@/types/communication";
 import { useCommunications } from "@/hooks/useCommunications";
-import { useDemoRole } from "@/hooks/useDemoRole";
+import { useRole } from "@/hooks/useRole";
 import { useSnapshot } from "@/hooks/use-church-data";
+import { useIsMobile } from "@/hooks/use-mobile";
 
-/** Reusable message wording, with a live preview of the finished message. */
+const CATEGORIES = Object.keys(TEMPLATE_CATEGORY_LABELS) as TemplateCategory[];
+
+interface TemplateValues {
+  name: string;
+  category: TemplateCategory;
+  channels: ContactMethod[];
+  body: string;
+}
+
+type Preview = (body: string) => { text: string; missing: readonly string[]; sampleName: string } | null;
+
+function channelList(channels: readonly ContactMethod[]): string {
+  return channels.map((channel) => CONTACT_METHOD_LABELS[channel]).join(", ");
+}
+
+/**
+ * Message templates, grouped by what they are for. Tapping one shows how it
+ * reads for a real person; editing happens in the same panel.
+ */
 export default function TemplatesPage() {
   const snapshot = useSnapshot();
-  const { can } = useDemoRole();
+  const { can } = useRole();
+  const isMobile = useIsMobile();
   const { templates, addTemplate, editTemplate, removeTemplate } = useCommunications();
 
-  const [editing, setEditing] = useState<MessageTemplate | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [openId, setOpenId] = useState<string | null>(null);
+  const [mode, setMode] = useState<"view" | "edit" | "new" | null>(null);
   const [deleting, setDeleting] = useState<MessageTemplate | null>(null);
 
   if (!can("communications.write")) {
@@ -53,266 +63,293 @@ export default function TemplatesPage() {
   }
 
   const sample = snapshot.people.find((person) => person.visitor) ?? snapshot.people[0];
+  const preview: Preview = (body) => {
+    if (!sample) return null;
+    const rendered = renderTemplate(body, {
+      person: sample,
+      churchName: snapshot.settings.churchName,
+      senderName: "Grace Mensah",
+      serviceDate: sample.visitor?.firstVisitDate,
+      serviceName: "our Sunday service",
+      groupName: snapshot.groups[0]?.name,
+    });
+    return { text: rendered.text, missing: rendered.missing, sampleName: sample.firstName };
+  };
+
+  const current = templates.find((template) => template.id === openId) ?? null;
+  const close = () => {
+    setMode(null);
+    setOpenId(null);
+  };
+  const groups = CATEGORIES.map((category) => ({
+    category,
+    rows: templates.filter((template) => template.category === category),
+  })).filter((group) => group.rows.length > 0);
 
   return (
-    <PageShell>
+    <PageShell className="max-w-4xl space-y-10">
       <PageHeader
         title="Message templates"
-        description="Wording the team can reuse. Placeholders are filled from the person's own record, and anything that cannot be filled stays visible so it is never sent half-written."
+        description="Ready-made wording the team can start from. Names and dates fill in from each person's record."
         actions={
-          <Button size="sm" className="gap-1.5" onClick={() => setCreating(true)}>
+          <Button size="lg" className="gap-2 rounded-full" onClick={() => setMode("new")}>
             <PlusIcon />
             New template
           </Button>
         }
       />
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        {templates.map((template) => {
-          const preview = sample
-            ? renderTemplate(template.body, {
-                person: sample,
-                churchName: snapshot.settings.churchName,
-                senderName: "Grace Mensah",
-                serviceDate: sample.visitor?.firstVisitDate,
-                serviceName: "our Sunday service",
-                groupName: snapshot.groups[0]?.name,
-              })
-            : null;
-
-          return (
-            <Card key={template.id}>
-              <CardHeader>
-                <CardTitle className="flex flex-wrap items-center justify-between gap-2 text-base">
-                  {template.name}
-                  <span className="flex items-center gap-1.5">
-                    {template.builtIn ? <Badge variant="outline">Built-in</Badge> : null}
-                    <SimulatedBadge />
-                  </span>
-                </CardTitle>
-                <CardDescription>
-                  {TEMPLATE_CATEGORY_LABELS[template.category]} ·{" "}
-                  {template.channels.map((channel) => CONTACT_METHOD_LABELS[channel]).join(", ")}
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <pre className="overflow-x-auto rounded-lg bg-muted/50 p-3 text-xs whitespace-pre-wrap">
-                  {template.body}
-                </pre>
-
-                {preview ? (
-                  <div className="space-y-1">
-                    <p className="text-xs font-medium text-muted-foreground">
-                      Preview for {sample ? sample.firstName : "a visitor"}
-                    </p>
-                    <p className="rounded-lg border p-3 text-sm whitespace-pre-wrap">
-                      {preview.text}
-                    </p>
-                    {preview.missing.length ? (
-                      <p className="text-xs text-destructive">
-                        Could not fill: {preview.missing.map((entry) => `{{${entry}}}`).join(", ")}
-                      </p>
-                    ) : null}
-                  </div>
-                ) : null}
-
-                <div className="flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="gap-1.5"
-                    onClick={() => setEditing(template)}
-                  >
-                    <PencilIcon />
-                    Edit
-                  </Button>
-                  {!template.builtIn ? (
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      className="gap-1.5"
-                      onClick={() => setDeleting(template)}
+      {groups.length ? (
+        groups.map((group) => (
+          <Section key={group.category} title={TEMPLATE_CATEGORY_LABELS[group.category]}>
+            <ul className="divide-y overflow-hidden rounded-3xl border bg-card">
+              {group.rows.map((template) => {
+                const shown = preview(template.body);
+                return (
+                  <li key={template.id}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpenId(template.id);
+                        setMode("view");
+                      }}
+                      className="flex min-h-14 w-full items-center gap-3 px-5 py-3 text-left outline-none hover:bg-muted/50 focus-visible:ring-3 focus-visible:ring-ring focus-visible:ring-inset"
                     >
-                      <Trash2Icon />
-                      Delete
-                    </Button>
-                  ) : null}
-                </div>
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
+                      <span className="min-w-0 flex-1">
+                        <span className="block font-medium">{template.name}</span>
+                        <span className="block text-sm text-muted-foreground">
+                          {channelList(template.channels)}
+                          {template.builtIn ? " · comes with GatherFlow" : ""}
+                        </span>
+                        {shown ? (
+                          <span className="mt-1 line-clamp-2 block text-sm text-muted-foreground">{shown.text}</span>
+                        ) : null}
+                      </span>
+                      <ChevronRightIcon className="size-5 shrink-0 text-muted-foreground" />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </Section>
+        ))
+      ) : (
+        <EmptyState title="No templates yet" description="Add the wording your team uses most, and it will be ready whenever someone prepares a message." />
+      )}
 
-      <TemplateDialog
-        open={creating || editing !== null}
-        template={editing}
-        onOpenChange={(open) => {
-          if (!open) {
-            setCreating(false);
-            setEditing(null);
+      <Sheet open={mode !== null} onOpenChange={(open) => !open && close()}>
+        <SheetContent
+          side={isMobile ? "bottom" : "right"}
+          className={
+            isMobile
+              ? "max-h-[92dvh] gap-0 overflow-y-auto rounded-t-3xl"
+              : "w-full gap-0 overflow-y-auto data-[side=right]:sm:max-w-lg"
           }
-        }}
-        onConfirm={async (values) => {
-          const outcome = editing
-            ? await editTemplate(editing.id, values)
-            : await addTemplate(values);
-          if (outcome.ok) {
-            setCreating(false);
-            setEditing(null);
-          }
-        }}
-      />
+        >
+          {mode === "view" && current ? (
+            <TemplateView
+              template={current}
+              preview={preview}
+              onEdit={() => setMode("edit")}
+              onDelete={() => setDeleting(current)}
+            />
+          ) : null}
+          {mode === "edit" && current ? (
+            <TemplateForm
+              key={current.id}
+              template={current}
+              preview={preview}
+              onCancel={() => setMode("view")}
+              onConfirm={async (values) => {
+                const outcome = await editTemplate(current.id, values);
+                if (outcome.ok) setMode("view");
+              }}
+            />
+          ) : null}
+          {mode === "new" ? (
+            <TemplateForm
+              key="new"
+              template={null}
+              preview={preview}
+              onCancel={close}
+              onConfirm={async (values) => {
+                const outcome = await addTemplate(values);
+                if (outcome.ok) close();
+              }}
+            />
+          ) : null}
+        </SheetContent>
+      </Sheet>
 
       <ConfirmDialog
         open={deleting !== null}
         onOpenChange={(open) => !open && setDeleting(null)}
         title={`Delete "${deleting?.name}"?`}
-        description="Messages already recorded in the communication history keep their text."
+        description="Messages already sent keep their wording."
         confirmLabel="Delete template"
         destructive
         onConfirm={() => {
           if (deleting) removeTemplate(deleting.id);
           setDeleting(null);
+          close();
         }}
       />
     </PageShell>
   );
 }
 
-interface TemplateValues {
-  name: string;
-  category: TemplateCategory;
-  channels: ContactMethod[];
-  body: string;
-}
-
-function TemplateDialog({
-  open,
-  template,
-  onOpenChange,
-  onConfirm,
-}: {
-  open: boolean;
-  template: MessageTemplate | null;
-  onOpenChange: (open: boolean) => void;
-  onConfirm: (values: TemplateValues) => void;
-}) {
+function PreviewBox({ preview, body }: { preview: Preview; body: string }) {
+  const shown = preview(body);
+  if (!shown) return null;
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>{template ? `Edit ${template.name}` : "New template"}</DialogTitle>
-          <DialogDescription>
-            Available placeholders: {TEMPLATE_PLACEHOLDERS.map((entry) => `{{${entry}}}`).join(", ")}
-          </DialogDescription>
-        </DialogHeader>
-        {open ? (
-          <TemplateFields
-            key={template?.id ?? "new"}
-            template={template}
-            onCancel={() => onOpenChange(false)}
-            onConfirm={onConfirm}
-          />
-        ) : null}
-      </DialogContent>
-    </Dialog>
+    <div className="space-y-2">
+      <p className="text-sm font-medium text-muted-foreground">How it reads for {shown.sampleName}</p>
+      <p className="rounded-2xl bg-muted px-4 py-3 whitespace-pre-wrap">{shown.text || " "}</p>
+      {shown.missing.length ? (
+        <p className="text-sm text-destructive">
+          Can&apos;t fill in {shown.missing.map((entry) => `{{${entry}}}`).join(", ")} for {shown.sampleName}. It stays
+          visible, so a message is never sent half-written.
+        </p>
+      ) : null}
+    </div>
   );
 }
 
-function TemplateFields({
+function TemplateView({
   template,
+  preview,
+  onEdit,
+  onDelete,
+}: {
+  template: MessageTemplate;
+  preview: Preview;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <>
+      <SheetHeader className="px-5 pt-5 pb-2 pr-12 text-left md:px-6">
+        <SheetTitle className="text-2xl">{template.name}</SheetTitle>
+        <SheetDescription>
+          {TEMPLATE_CATEGORY_LABELS[template.category]} · {channelList(template.channels)}
+        </SheetDescription>
+      </SheetHeader>
+      <div className="space-y-5 px-5 py-3 md:px-6">
+        <PreviewBox preview={preview} body={template.body} />
+        <div className="space-y-2">
+          <p className="text-sm font-medium text-muted-foreground">The wording, with its blanks</p>
+          <pre className="overflow-x-auto rounded-2xl border px-4 py-3 font-sans text-sm whitespace-pre-wrap">
+            {template.body}
+          </pre>
+        </div>
+      </div>
+      <div className="mt-auto flex flex-wrap gap-2 border-t px-5 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] md:px-6">
+        <Button size="lg" className="gap-2 rounded-full" onClick={onEdit}>
+          <PencilIcon />
+          Edit
+        </Button>
+        {!template.builtIn ? (
+          <Button size="lg" variant="ghost" className="gap-2 rounded-full text-destructive" onClick={onDelete}>
+            <Trash2Icon />
+            Delete
+          </Button>
+        ) : null}
+      </div>
+    </>
+  );
+}
+
+function TemplateForm({
+  template,
+  preview,
   onCancel,
   onConfirm,
 }: {
   template: MessageTemplate | null;
+  preview: Preview;
   onCancel: () => void;
   onConfirm: (values: TemplateValues) => void;
 }) {
   const [name, setName] = useState(template?.name ?? "");
-  const [category, setCategory] = useState<TemplateCategory>(
-    template?.category ?? "general_check_in",
-  );
-  const [channels, setChannels] = useState<ContactMethod[]>(
-    template ? [...template.channels] : ["whatsapp"],
-  );
+  const [category, setCategory] = useState<TemplateCategory>(template?.category ?? "general_check_in");
+  const [channels, setChannels] = useState<ContactMethod[]>(template ? [...template.channels] : ["whatsapp"]);
   const [body, setBody] = useState(template?.body ?? "");
 
   return (
     <>
-      <Field>
-        <FieldLabel htmlFor="template-name">Name</FieldLabel>
-        <Input
-          id="template-name"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-        />
-      </Field>
-
-      <Field>
-        <FieldLabel htmlFor="template-category">Category</FieldLabel>
-        <NativeSelect
-          className="w-full"
-          id="template-category"
-          value={category}
-          onChange={(event) => setCategory(event.target.value as TemplateCategory)}
-        >
-          {(Object.keys(TEMPLATE_CATEGORY_LABELS) as TemplateCategory[]).map((option) => (
-            <NativeSelectOption key={option} value={option}>
-              {TEMPLATE_CATEGORY_LABELS[option]}
-            </NativeSelectOption>
-          ))}
-        </NativeSelect>
-      </Field>
-
-      <Field>
-        <FieldLabel>Channels</FieldLabel>
-        <div className="flex flex-wrap gap-2">
-          {CONTACT_METHODS.map((channel) => (
-            <label
-              key={channel}
-              className="flex cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-1.5 text-sm has-data-checked:border-primary has-data-checked:bg-muted/50"
-            >
-              <Checkbox
-                checked={channels.includes(channel)}
-                onCheckedChange={(checked) =>
-                  setChannels((previous) =>
-                    checked === true
-                      ? [...previous, channel]
-                      : previous.filter((entry) => entry !== channel),
-                  )
-                }
-              />
-              {CONTACT_METHOD_LABELS[channel]}
-            </label>
-          ))}
-        </div>
-      </Field>
-
-      <Field>
-        <FieldLabel htmlFor="template-body">Message</FieldLabel>
-        <Textarea
-          id="template-body"
-          rows={8}
-          value={body}
-          onChange={(event) => setBody(event.target.value)}
-        />
-        <FieldDescription>
+      <SheetHeader className="px-5 pt-5 pb-2 pr-12 text-left md:px-6">
+        <SheetTitle className="text-2xl">{template ? `Edit ${template.name}` : "New template"}</SheetTitle>
+        <SheetDescription>
           Warm and low-pressure works best: a first-time visitor should feel welcomed, not pursued.
-        </FieldDescription>
-      </Field>
+        </SheetDescription>
+      </SheetHeader>
+      <div className="space-y-5 px-5 py-3 md:px-6">
+        <Field>
+          <FieldLabel htmlFor="template-name">Name</FieldLabel>
+          <Input id="template-name" className="h-11" value={name} onChange={(event) => setName(event.target.value)} />
+        </Field>
 
-      <DialogFooter>
-        <Button variant="outline" onClick={onCancel}>
-          Cancel
-        </Button>
+        <Field>
+          <FieldLabel htmlFor="template-category">What it&apos;s for</FieldLabel>
+          <NativeSelect
+            className="w-full"
+            id="template-category"
+            value={category}
+            onChange={(event) => setCategory(event.target.value as TemplateCategory)}
+          >
+            {CATEGORIES.map((option) => (
+              <NativeSelectOption key={option} value={option}>
+                {TEMPLATE_CATEGORY_LABELS[option]}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+        </Field>
+
+        <Field>
+          <FieldLabel>Send it by</FieldLabel>
+          <div className="flex flex-wrap gap-2">
+            {CONTACT_METHODS.map((channel) => (
+              <label
+                key={channel}
+                className="flex min-h-11 cursor-pointer items-center gap-2 rounded-full border px-4 text-sm has-data-checked:border-primary has-data-checked:bg-primary/12"
+              >
+                <Checkbox
+                  checked={channels.includes(channel)}
+                  onCheckedChange={(checked) =>
+                    setChannels((previous) =>
+                      checked === true ? [...previous, channel] : previous.filter((entry) => entry !== channel),
+                    )
+                  }
+                />
+                {CONTACT_METHOD_LABELS[channel]}
+              </label>
+            ))}
+          </div>
+        </Field>
+
+        <Field>
+          <FieldLabel htmlFor="template-body">Message</FieldLabel>
+          <Textarea id="template-body" rows={7} value={body} onChange={(event) => setBody(event.target.value)} />
+          <FieldDescription>
+            Blanks you can use: {TEMPLATE_PLACEHOLDERS.map((entry) => `{{${entry}}}`).join(", ")}
+          </FieldDescription>
+        </Field>
+
+        {body.trim() ? <PreviewBox preview={preview} body={body} /> : null}
+      </div>
+      <div className="mt-auto flex flex-wrap gap-2 border-t px-5 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] md:px-6">
         <Button
+          size="lg"
+          className="rounded-full"
           disabled={!name.trim() || !body.trim() || !channels.length}
           onClick={() => onConfirm({ name, category, channels, body })}
         >
           Save template
         </Button>
-      </DialogFooter>
+        <Button size="lg" variant="ghost" className="rounded-full" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
     </>
   );
 }

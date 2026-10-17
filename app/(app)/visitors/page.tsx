@@ -2,7 +2,9 @@
 
 import { useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { DownloadIcon, UserPlusIcon } from "lucide-react";
+import Link from "next/link";
+import { ChevronRightIcon, DownloadIcon, UserPlusIcon } from "lucide-react";
+import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { LinkButton } from "@/components/shared/link-button";
 import { Input } from "@/components/ui/input";
@@ -17,7 +19,8 @@ import {
   ContactPreferencesDialog,
 } from "@/components/visitors/visitor-dialogs";
 import { displayName } from "@/lib/strings";
-import { useDemoRole } from "@/hooks/useDemoRole";
+import { useRole } from "@/hooks/useRole";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { useVisitors } from "@/hooks/useVisitors";
 import {
   VISITOR_FILTER_LABELS,
@@ -26,8 +29,20 @@ import {
 } from "@/services/visitors/selectors";
 
 const FILTERS = Object.keys(VISITOR_FILTER_LABELS) as VisitorFilter[];
+/** The views people reach for; the rest are one tap away in "More". */
+const MAIN_FILTERS: readonly VisitorFilter[] = ["all", "first_time", "awaiting_assignment", "overdue"];
+const SHORT_LABELS: Partial<Record<VisitorFilter, string>> = {
+  all: "Everyone",
+  first_time: "First visit",
+  awaiting_assignment: "Nobody assigned",
+  overdue: "Follow-up late",
+};
 
-/** Visitor directory: search, filter, bulk-assign and export. */
+/**
+ * Visitors: the people who have come recently. Four common views up front,
+ * the rest under "More"; people as a list on a phone, the full table (with
+ * bulk actions) on a wide screen.
+ */
 export default function VisitorsPage() {
   const params = useSearchParams();
   const initialFilter = (params.get("filter") as VisitorFilter | null) ?? "all";
@@ -43,7 +58,8 @@ export default function VisitorsPage() {
   const [closing, setClosing] = useState<VisitorRow | null>(null);
   const [preferences, setPreferences] = useState<VisitorRow | null>(null);
 
-  const { assignableTeam, can } = useDemoRole();
+  const { assignableTeam, can } = useRole();
+  const isMobile = useIsMobile();
   const {
     rows,
     counts,
@@ -94,39 +110,54 @@ export default function VisitorsPage() {
     <PageShell>
       <PageHeader
         title="Visitors"
-        description={`${counts.total} records in this view · ${counts.awaitingAssignment} awaiting assignment · ${counts.overdue} with overdue follow-up · ${counts.optedOut} asked not to be contacted.`}
+        description={
+          counts.awaitingAssignment
+            ? `${counts.total} people · ${counts.awaitingAssignment} still need somebody to say hello`
+            : `${counts.total} people`
+        }
         actions={
           <>
-            <Button variant="outline" size="sm" onClick={() => exportCsv()} className="gap-1.5">
-              <DownloadIcon />
-              Export CSV
-            </Button>
+            {can("exports.run") && !isMobile ? (
+              <Button variant="ghost" onClick={() => exportCsv()} className="gap-1.5 rounded-full">
+                <DownloadIcon />
+                Export
+              </Button>
+            ) : null}
             {canEdit ? (
-              <>
-                <LinkButton variant="outline" size="sm" href="/visitors/quick">
-                  Quick registration
-                </LinkButton>
-                <LinkButton size="sm" className="gap-1.5" href="/visitors/new">
-                  <UserPlusIcon />
-                  Register a visitor
-                </LinkButton>
-              </>
+              <LinkButton className="gap-1.5 rounded-full" href="/visitors/quick">
+                <UserPlusIcon />
+                Welcome someone new
+              </LinkButton>
             ) : null}
           </>
         }
       />
 
-      <div className="flex flex-wrap gap-1.5">
-        {FILTERS.map((option) => (
+      <div className="flex flex-wrap items-center gap-2">
+        {MAIN_FILTERS.map((option) => (
           <Button
             key={option}
             variant={filter === option ? "default" : "outline"}
-            size="xs"
+            className="h-10 rounded-full"
+            aria-pressed={filter === option}
             onClick={() => setFilter(option)}
           >
-            {VISITOR_FILTER_LABELS[option]}
+            {SHORT_LABELS[option]}
           </Button>
         ))}
+        <NativeSelect
+          aria-label="More views"
+          value={MAIN_FILTERS.includes(filter) ? "" : filter}
+          onChange={(event) => setFilter((event.target.value || "all") as VisitorFilter)}
+          className={cn("h-10 rounded-full", !MAIN_FILTERS.includes(filter) && "border-primary")}
+        >
+          <NativeSelectOption value="">More…</NativeSelectOption>
+          {FILTERS.filter((option) => !MAIN_FILTERS.includes(option)).map((option) => (
+            <NativeSelectOption key={option} value={option}>
+              {VISITOR_FILTER_LABELS[option]}
+            </NativeSelectOption>
+          ))}
+        </NativeSelect>
       </div>
 
       {selectedRows.length && canEdit ? (
@@ -157,6 +188,45 @@ export default function VisitorsPage() {
         </div>
       ) : null}
 
+      {isMobile ? (
+        <div className="space-y-3">
+          <Input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search by name or phone"
+            className="h-11 rounded-full"
+            aria-label="Search visitors"
+          />
+          {rows.length ? (
+            <ul className="divide-y overflow-hidden rounded-3xl border bg-card">
+              {rows.map((row) => (
+                <li key={row.person.id}>
+                  <Link
+                    href={`/visitors/${row.person.id}`}
+                    className="flex min-h-16 items-center gap-3 px-5 py-3 hover:bg-muted/50"
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-medium">{displayName(row.person)}</span>
+                      <span className="block truncate text-sm text-muted-foreground">
+                        {row.statusLabel}
+                        {row.assigneeName ? ` · ${row.assigneeName}` : " · nobody assigned"}
+                      </span>
+                    </span>
+                    {row.hasOverdue ? (
+                      <span className="shrink-0 rounded-full bg-primary/12 px-2.5 py-0.5 text-xs font-medium text-primary dark:text-foreground">
+                        Late
+                      </span>
+                    ) : null}
+                    <ChevronRightIcon className="size-5 shrink-0 text-muted-foreground" />
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="rounded-2xl bg-muted px-5 py-6 text-muted-foreground">Nobody matches this view.</p>
+          )}
+        </div>
+      ) : (
       <VisitorTable
         rows={rows}
         selected={selected}
@@ -204,16 +274,17 @@ export default function VisitorsPage() {
             <EmptyState
               icon={UserPlusIcon}
               title="No visitors yet"
-              description="Register the first visitor after a service, or open the welcome page for people to register themselves."
+              description="Welcome the first person after a service, or put the welcome page's QR code where people will see it."
               action={
-                <LinkButton size="sm" href="/visitors/new">
-                  Register a visitor
+                <LinkButton size="sm" href="/visitors/quick">
+                  Welcome someone new
                 </LinkButton>
               }
             />
           )
         }
       />
+      )}
 
       <AssignDialog
         open={assigning !== null}

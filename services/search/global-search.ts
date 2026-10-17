@@ -16,7 +16,7 @@ export interface SearchResult {
 
 export interface SearchOptions {
   role: DemoRole;
-  /** Team member id of the signed-in demo user, for own-task scoping. */
+  /** Team member id of the signed-in person, for own-task scoping. */
   teamMemberId?: string;
   limit?: number;
 }
@@ -24,7 +24,7 @@ export interface SearchOptions {
 /**
  * Global search.
  *
- * Results respect the active demo role: a volunteer only finds their own
+ * Results respect the signed-in role: a volunteer only finds their own
  * tasks, a member finds nothing in the directory, and pastoral-care records
  * are never searchable from here at all — they live behind the care section
  * so a restricted note can never surface in a global result list.

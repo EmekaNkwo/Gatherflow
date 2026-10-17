@@ -55,6 +55,7 @@ async function churchWithSession(
     churchId,
     role,
     teamMemberId,
+    memberships: 1,
   };
 
   return { churchId, session, snapshot: loaded.snapshot, repository };

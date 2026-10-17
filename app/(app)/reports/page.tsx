@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { cn } from "cn";
 import {
   ChartContainer,
   ChartTooltip,
@@ -12,35 +12,56 @@ import {
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Field, FieldLabel } from "@/components/ui/field";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AttendanceChart } from "@/components/dashboard/attendance-chart";
-import { RatioStat, StatTile } from "@/components/shared/metric-card";
 import { PageHeader, PageShell, Section } from "@/components/shared/page-header";
 import { RestrictedState } from "@/components/shared/empty-state";
-import { formatRatio } from "@/lib/metrics";
-import { addDaysIso, toIsoDate } from "@/lib/dates";
+import { addDaysIso, formatDisplayDate, toIsoDate } from "@/lib/dates";
 import { SERVICE_TYPES, SERVICE_TYPE_LABELS, type ServiceType } from "@/types/attendance";
+import { DEMO_ROLE_LABELS } from "@/types/team";
+import type { Ratio } from "@/types/common";
 import { useChurchAnalytics } from "@/hooks/useChurchAnalytics";
-import { useDemoRole } from "@/hooks/useDemoRole";
+import { useRole } from "@/hooks/useRole";
 import { useNow } from "@/hooks/use-now";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 const VISITOR_CHART = {
   count: { label: "First-time visitors", color: "var(--chart-1)" },
 } satisfies ChartConfig;
 
+const PERIODS = [
+  { id: "30", label: "Last month", days: 30 },
+  { id: "90", label: "3 months", days: 90 },
+  { id: "365", label: "A year", days: 365 },
+  { id: "custom", label: "Choose dates", days: 0 },
+] as const;
+
+type PeriodId = (typeof PERIODS)[number]["id"];
+
+/** "18 of 30 (60%)", or a plain "none yet" when there is nothing to count. */
+function counted(value: Ratio): string {
+  if (value.percentage === null) return "none yet";
+  return `${value.numerator} of ${value.denominator} (${value.percentage}%)`;
+}
+
+function plural(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`;
+}
+
 /**
- * Reporting.
+ * Reports: a few plain sentences first, then the charts and the detail.
  *
- * Every rate shows the counts it came from and the window it covers, and the
- * criteria behind any judgement — such as "not seen recently" — are printed
- * next to the figures rather than hidden in the code.
+ * Every rate carries the counts it came from and the window it covers, and
+ * the criteria behind any judgement are printed next to the figures.
  */
 export default function ReportsPage() {
   const now = useNow();
-  const { can } = useDemoRole();
+  const today = toIsoDate(now);
+  const { can } = useRole();
+  const isMobile = useIsMobile();
 
-  const [from, setFrom] = useState(() => addDaysIso(toIsoDate(now), -90));
-  const [to, setTo] = useState(() => toIsoDate(now));
+  const [period, setPeriod] = useState<PeriodId>("90");
+  const [from, setFrom] = useState(() => addDaysIso(today, -90));
+  const [to, setTo] = useState(() => today);
   const [serviceType, setServiceType] = useState<ServiceType | "">("");
 
   const analytics = useChurchAnalytics(
@@ -62,39 +83,76 @@ export default function ReportsPage() {
     );
   }
 
+  const choosePeriod = (id: PeriodId) => {
+    setPeriod(id);
+    const preset = PERIODS.find((entry) => entry.id === id);
+    if (preset && preset.days > 0) {
+      setFrom(addDaysIso(today, -preset.days));
+      setTo(today);
+    }
+  };
+
   const journey = analytics.journey;
+  const findings = buildFindings(analytics);
+  const rangeText = `${formatDisplayDate(journey.range.from)} to ${formatDisplayDate(journey.range.to)}`;
 
   return (
-    <PageShell>
+    <PageShell className="max-w-4xl space-y-10">
       <PageHeader
-        title="Reports & analytics"
-        description="Counted from the stored records every time this page renders — nothing is cached, so the figures cannot drift from the data."
+        title="Reports"
+        description="How things are going, counted fresh from your records each time you open this page."
       />
 
-      <div className="flex flex-wrap items-end gap-3">
-        <Field className="w-40">
-          <FieldLabel htmlFor="report-from">From</FieldLabel>
-          <Input
-            id="report-from"
-            type="date"
-            value={from}
-            onChange={(event) => setFrom(event.target.value)}
-          />
-        </Field>
-        <Field className="w-40">
-          <FieldLabel htmlFor="report-to">To</FieldLabel>
-          <Input
-            id="report-to"
-            type="date"
-            value={to}
-            onChange={(event) => setTo(event.target.value)}
-          />
-        </Field>
-        <Field className="w-56">
-          <FieldLabel htmlFor="report-service">Service</FieldLabel>
+      <div className="space-y-3">
+        <div role="group" aria-label="Period" className="inline-flex flex-wrap rounded-3xl bg-muted p-1">
+          {PERIODS.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              aria-pressed={period === option.id}
+              onClick={() => choosePeriod(option.id)}
+              className={cn(
+                "min-h-11 rounded-full px-4 text-sm font-medium text-muted-foreground transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring",
+                period === option.id && "bg-card text-foreground shadow-sm",
+              )}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+        {period === "custom" ? (
+          <div className="flex flex-wrap items-end gap-3">
+            <Field className="w-44">
+              <FieldLabel htmlFor="report-from">From</FieldLabel>
+              <Input id="report-from" type="date" className="h-11" value={from} onChange={(event) => setFrom(event.target.value)} />
+            </Field>
+            <Field className="w-44">
+              <FieldLabel htmlFor="report-to">To</FieldLabel>
+              <Input id="report-to" type="date" className="h-11" value={to} onChange={(event) => setTo(event.target.value)} />
+            </Field>
+          </div>
+        ) : null}
+      </div>
+
+      <section className="rounded-[2rem] bg-warm px-6 py-7 md:px-10">
+        <p className="text-sm font-medium text-muted-foreground">{rangeText}</p>
+        <ul className="mt-3 space-y-3 text-lg">
+          {findings.map((finding) => (
+            <li key={finding} className="max-w-2xl">
+              {finding}
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <Section
+        title="Weekly attendance"
+        description={`The last 12 weeks. A week with no service shows as zero.`}
+        actions={
           <NativeSelect
-            className="w-full"
             id="report-service"
+            aria-label="Which services"
+            className="min-h-11"
             value={serviceType}
             onChange={(event) => setServiceType(event.target.value as ServiceType | "")}
           >
@@ -105,189 +163,163 @@ export default function ReportsPage() {
               </NativeSelectOption>
             ))}
           </NativeSelect>
-        </Field>
-      </div>
+        }
+      >
+        <div className="rounded-3xl border bg-card p-5">
+          <AttendanceChart data={analytics.attendanceTrend} className="h-60 w-full" />
+        </div>
+      </Section>
 
-      <Tabs defaultValue="engagement">
-        <TabsList>
-          <TabsTrigger value="engagement">Engagement</TabsTrigger>
-          <TabsTrigger value="journey">Visitor journey</TabsTrigger>
-          <TabsTrigger value="team">Team workload</TabsTrigger>
-        </TabsList>
+      <Section title="First-time visitors by month" description="Counted on each person's own first visit.">
+        <div className="rounded-3xl border bg-card p-5">
+          <ChartContainer config={VISITOR_CHART} className="h-56 w-full">
+            <BarChart data={analytics.visitorTrend}>
+              <CartesianGrid vertical={false} strokeDasharray="3 3" />
+              <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={8} />
+              <YAxis width={28} tickLine={false} axisLine={false} allowDecimals={false} />
+              <ChartTooltip content={<ChartTooltipContent />} />
+              <Bar dataKey="count" fill="var(--color-count)" radius={6} />
+            </BarChart>
+          </ChartContainer>
+        </div>
+      </Section>
 
-        <TabsContent value="engagement" className="space-y-4">
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Card>
-              <CardHeader>
-                <CardTitle>Weekly attendance</CardTitle>
-                <CardDescription>
-                  {serviceType ? SERVICE_TYPE_LABELS[serviceType] : "All services"} · average{" "}
-                  {analytics.weeklyAverage.average} across{" "}
-                  {analytics.weeklyAverage.weeksCounted} recorded weeks.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <AttendanceChart data={analytics.attendanceTrend} className="h-56 w-full" />
-              </CardContent>
-            </Card>
+      <Section
+        title="From first visit to belonging"
+        description={`Out of the ${plural(journey.cohortSize, "person", "people")} whose first visit was between ${rangeText}.`}
+      >
+        <ul className="divide-y overflow-hidden rounded-3xl border bg-card">
+          {[
+            { label: "Heard from someone", value: journey.contacted },
+            { label: "Came back", value: journey.returned },
+            { label: "Asked about membership", value: journey.requestedOrientation },
+            { label: "Became members", value: journey.becameMembers },
+            { label: "Joined a group", value: journey.joinedGroup },
+          ].map((row) => (
+            <li key={row.label} className="flex min-h-14 items-center justify-between gap-3 px-5 py-3">
+              <span>{row.label}</span>
+              <span className="text-right font-medium tabular-nums">{counted(row.value)}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="max-w-2xl text-sm text-muted-foreground">
+          {plural(journey.closed, "record is", "records are")} closed: paused, declined, passed on, or
+          stopped after the agreed number of tries. A closed record is a respected decision, not a
+          failure. These figures describe what the church did, never anybody&apos;s faith.
+        </p>
+      </Section>
 
-            <Card>
-              <CardHeader>
-                <CardTitle>First-time visitors by month</CardTitle>
-                <CardDescription>
-                  Counted on each person&apos;s own first recorded visit.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <ChartContainer config={VISITOR_CHART} className="h-56 w-full">
-                  <BarChart data={analytics.visitorTrend}>
-                    <CartesianGrid vertical={false} strokeDasharray="3 3" />
-                    <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={8} />
-                    <YAxis width={28} tickLine={false} axisLine={false} allowDecimals={false} />
-                    <ChartTooltip content={<ChartTooltipContent />} />
-                    <Bar dataKey="count" fill="var(--color-count)" radius={4} />
-                  </BarChart>
-                </ChartContainer>
-              </CardContent>
-            </Card>
+      <Section
+        title="Members"
+        description={`Anyone with no recorded attendance for ${analytics.criteria.inactiveAfterWeeksAbsent} weeks is flagged for review. Nobody's status changes on its own.`}
+      >
+        <ul className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+          {analytics.membership.map((entry) => (
+            <li key={entry.status} className="flex flex-col gap-1 rounded-3xl border bg-card px-5 py-4">
+              <span className="font-heading text-3xl font-medium tabular-nums">{entry.count}</span>
+              <span className="text-sm text-muted-foreground">{entry.label.toLowerCase()}</span>
+            </li>
+          ))}
+        </ul>
+      </Section>
+
+      <Section
+        title="Who is carrying the work"
+        description="To share follow-ups fairly. These counts show capacity, never anybody's worth."
+      >
+        {isMobile ? (
+          <ul className="divide-y overflow-hidden rounded-3xl border bg-card">
+            {analytics.workloads.map((entry) => (
+              <li key={entry.member.id} className="min-h-14 px-5 py-3">
+                <p className="font-medium">
+                  {entry.member.name}
+                  {entry.member.active ? "" : " · inactive"}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  {DEMO_ROLE_LABELS[entry.member.role]} · {entry.assigned} open · {entry.dueToday} due today ·{" "}
+                  {entry.overdue} overdue · {entry.completed} done ({entry.completedOnTime} on time)
+                </p>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div className="overflow-x-auto rounded-3xl border bg-card px-5 py-2">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-left text-muted-foreground">
+                  <th className="py-3 pr-4 font-medium">Team member</th>
+                  <th className="py-3 pr-4 font-medium">Role</th>
+                  <th className="py-3 pr-4 text-right font-medium">Open</th>
+                  <th className="py-3 pr-4 text-right font-medium">Due today</th>
+                  <th className="py-3 pr-4 text-right font-medium">Overdue</th>
+                  <th className="py-3 pr-4 text-right font-medium">Done</th>
+                  <th className="py-3 text-right font-medium">On time</th>
+                </tr>
+              </thead>
+              <tbody>
+                {analytics.workloads.map((entry) => (
+                  <tr key={entry.member.id} className="border-b last:border-0">
+                    <td className="py-3 pr-4 font-medium">
+                      {entry.member.name}
+                      {entry.member.active ? "" : " · inactive"}
+                    </td>
+                    <td className="py-3 pr-4 text-muted-foreground">{DEMO_ROLE_LABELS[entry.member.role]}</td>
+                    <td className="py-3 pr-4 text-right tabular-nums">{entry.assigned}</td>
+                    <td className="py-3 pr-4 text-right tabular-nums">{entry.dueToday}</td>
+                    <td className="py-3 pr-4 text-right tabular-nums">{entry.overdue}</td>
+                    <td className="py-3 pr-4 text-right tabular-nums">{entry.completed}</td>
+                    <td className="py-3 text-right tabular-nums">{entry.completedOnTime}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
-
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <Card>
-              <CardContent className="pt-6">
-                <RatioStat
-                  label="Follow-ups completed"
-                  ratio={analytics.followUp.completed}
-                  explanation={`Tasks concluded between ${from} and ${to}.`}
-                />
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <RatioStat
-                  label="Completed on time"
-                  ratio={analytics.followUp.onTime}
-                  explanation="Completed on or before the due date."
-                />
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <RatioStat
-                  label="Overdue right now"
-                  ratio={analytics.overdueRate}
-                  explanation="Share of open tasks past their due date."
-                />
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className="pt-6">
-                <RatioStat
-                  label="Members in an active group"
-                  ratio={analytics.groupParticipation}
-                  explanation="Excludes archived and transferred members."
-                />
-              </CardContent>
-            </Card>
-          </div>
-
-          <Section
-            title="Membership"
-            description={`"Flagged for review" means no recorded attendance for ${analytics.criteria.inactiveAfterWeeksAbsent} weeks. Nothing is reclassified automatically.`}
-          >
-            <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-5">
-              {analytics.membership.map((entry) => (
-                <StatTile key={entry.status} label={entry.label} value={entry.count} />
-              ))}
-            </div>
-          </Section>
-        </TabsContent>
-
-        <TabsContent value="journey" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Visitor journey</CardTitle>
-              <CardDescription>
-                Every rate below uses the same denominator: the {journey.cohortSize} first-time
-                visitors whose first visit falls between {journey.range.from} and{" "}
-                {journey.range.to}.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="grid gap-6 sm:grid-cols-2 lg:grid-cols-5">
-              <RatioStat label="Contacted" ratio={journey.contacted} />
-              <RatioStat label="Returned" ratio={journey.returned} />
-              <RatioStat label="Asked about membership" ratio={journey.requestedOrientation} />
-              <RatioStat label="Became members" ratio={journey.becameMembers} />
-              <RatioStat label="Joined a group" ratio={journey.joinedGroup} />
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>What the numbers do not say</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2 text-sm text-muted-foreground">
-              <p>
-                {journey.closed} of these records are closed — paused, declined, referred on, or
-                closed after the agreed number of attempts. A closed record is a respected
-                decision, not a failure.
-              </p>
-              <p>
-                These figures describe what the church did and what was recorded. They say nothing
-                about anybody&apos;s faith or commitment, and should not be read that way.
-              </p>
-              <p>Follow-up completion in this window: {formatRatio(analytics.followUp.completed)}.</p>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="team" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Volunteer workload</CardTitle>
-              <CardDescription>
-                For distributing work fairly. Task counts are a measure of capacity, never of
-                anybody&apos;s worth.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b text-left text-xs text-muted-foreground">
-                      <th className="py-2 pr-4 font-medium">Team member</th>
-                      <th className="py-2 pr-4 font-medium">Role</th>
-                      <th className="py-2 pr-4 font-medium">Open</th>
-                      <th className="py-2 pr-4 font-medium">Due today</th>
-                      <th className="py-2 pr-4 font-medium">Overdue</th>
-                      <th className="py-2 pr-4 font-medium">Completed</th>
-                      <th className="py-2 font-medium">On time</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {analytics.workloads.map((entry) => (
-                      <tr key={entry.member.id} className="border-b last:border-0">
-                        <td className="py-2 pr-4">
-                          {entry.member.name}
-                          {entry.member.active ? "" : " · inactive"}
-                        </td>
-                        <td className="py-2 pr-4 text-muted-foreground capitalize">
-                          {entry.member.role.replace(/_/g, " ")}
-                        </td>
-                        <td className="py-2 pr-4 tabular-nums">{entry.assigned}</td>
-                        <td className="py-2 pr-4 tabular-nums">{entry.dueToday}</td>
-                        <td className="py-2 pr-4 tabular-nums">{entry.overdue}</td>
-                        <td className="py-2 pr-4 tabular-nums">{entry.completed}</td>
-                        <td className="py-2 tabular-nums">{entry.completedOnTime}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
+        )}
+      </Section>
     </PageShell>
   );
+}
+
+/** Three to five plain sentences, each carrying the counts behind it. */
+function buildFindings(analytics: ReturnType<typeof useChurchAnalytics>): string[] {
+  const { journey, weeklyAverage, followUp, overdueRate, groupParticipation } = analytics;
+  const findings: string[] = [];
+
+  if (journey.cohortSize > 0) {
+    findings.push(
+      `${plural(journey.cohortSize, "person", "people")} visited for the first time, and ${journey.returned.numerator} of them came back (${journey.returned.percentage}%).`,
+    );
+    findings.push(
+      `${journey.contacted.numerator} of the ${journey.cohortSize} heard from someone, and ${journey.becameMembers.numerator} became members.`,
+    );
+  } else {
+    findings.push("Nobody visited for the first time in this period.");
+  }
+
+  if (weeklyAverage.weeksCounted > 0) {
+    findings.push(
+      `About ${Math.round(weeklyAverage.average)} people come on a usual week, averaged over the last ${plural(weeklyAverage.weeksCounted, "week", "weeks")} with a service.`,
+    );
+  }
+
+  const followUpParts: string[] = [];
+  if (followUp.completed.denominator > 0) {
+    followUpParts.push(
+      `${followUp.completed.numerator} of ${followUp.completed.denominator} follow-ups that ended in this period were done rather than cancelled, ${followUp.onTime.numerator} of them by their due day.`,
+    );
+  }
+  if (overdueRate.denominator > 0) {
+    followUpParts.push(
+      `Right now ${overdueRate.numerator} of ${overdueRate.denominator} open follow-ups are past their due day.`,
+    );
+  }
+  if (followUpParts.length) findings.push(followUpParts.join(" "));
+
+  if (groupParticipation.denominator > 0) {
+    findings.push(
+      `${groupParticipation.numerator} of ${groupParticipation.denominator} members are in an active group (${groupParticipation.percentage}%), not counting archived or transferred members.`,
+    );
+  }
+
+  return findings;
 }

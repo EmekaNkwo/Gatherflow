@@ -21,7 +21,8 @@ import {
   MAILJET_SEND_URL,
   type MailjetTransport,
 } from "./mailjet";
-import { isSuppressed, outboxCustomId, parseCustomId, unsubscribeUrl } from "./outbox";
+import { isSuppressed, outboxCustomId, parseCustomId } from "./outbox";
+import { signUnsubscribe, unsubscribeUrl, verifyUnsubscribe } from "./unsubscribe";
 import { sendTemplatedEmail, toHtml } from "./send-command";
 import { drainOutbox } from "./worker";
 import { applyEvents, constantTimeEquals, eventKey, parseEventPayload } from "./webhook";
@@ -126,6 +127,7 @@ async function churchWithContactablePerson() {
     churchId,
     role: "follow_up_coordinator",
     teamMemberId: loaded.snapshot.team[0]?.id ?? null,
+    memberships: 1,
   };
 
   return { churchId, repository, session, person: person!, template: template!, loaded };
@@ -281,6 +283,7 @@ describe.skipIf(!CONNECTION)("email pipeline", () => {
         db,
         mailjet: client,
         appUrl: "https://church.example.com",
+        unsubscribeSecret: "unsub-secret",
         workerId: "test",
         churchId,
       });
@@ -298,8 +301,15 @@ describe.skipIf(!CONNECTION)("email pipeline", () => {
       };
       expect(sent.Messages[0].To[0].Email).toBe(person.email!.toLowerCase());
       expect(sent.Messages[0].CustomID).toBe(outboxCustomId(churchId, queued.value.outboxId));
-      // Every send carries a way out, matching the opt-in it relies on.
-      expect(sent.Messages[0].Headers["List-Unsubscribe"]).toContain("/unsubscribe");
+      // Every send carries a way out, matching the opt-in it relies on — and
+      // a signed one, so the link in the header is the only way to use it.
+      const header = sent.Messages[0].Headers["List-Unsubscribe"];
+      expect(header).toContain("/unsubscribe");
+      const link = new URL(header.slice(1, -1));
+      const verified = verifyUnsubscribe("unsub-secret", link.searchParams);
+      expect(verified.ok).toBe(true);
+      if (verified.ok) expect(verified.value).toEqual({ churchId, personId: person.id });
+      expect(sent.Messages[0].Headers["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
 
       const [row] = await db
         .select()
@@ -332,6 +342,7 @@ describe.skipIf(!CONNECTION)("email pipeline", () => {
         db,
         mailjet: client,
         appUrl: "https://church.example.com",
+        unsubscribeSecret: "unsub-secret",
         workerId: "test",
         churchId,
       });
@@ -363,6 +374,7 @@ describe.skipIf(!CONNECTION)("email pipeline", () => {
         db,
         mailjet: client,
         appUrl: "https://church.example.com",
+        unsubscribeSecret: "unsub-secret",
         workerId: "test",
         churchId,
       });
@@ -390,6 +402,7 @@ describe.skipIf(!CONNECTION)("email pipeline", () => {
         db,
         mailjet: client,
         appUrl: "https://church.example.com",
+        unsubscribeSecret: "unsub-secret",
         workerId: "a",
         churchId,
       });
@@ -397,6 +410,7 @@ describe.skipIf(!CONNECTION)("email pipeline", () => {
         db,
         mailjet: client,
         appUrl: "https://church.example.com",
+        unsubscribeSecret: "unsub-secret",
         workerId: "b",
         churchId,
       });
@@ -430,6 +444,7 @@ describe.skipIf(!CONNECTION)("email pipeline", () => {
         db,
         mailjet: client,
         appUrl: "https://church.example.com",
+        unsubscribeSecret: "unsub-secret",
         workerId: "fresh",
         churchId,
       });
@@ -452,6 +467,7 @@ describe.skipIf(!CONNECTION)("email pipeline", () => {
         db,
         mailjet: client,
         appUrl: "https://church.example.com",
+        unsubscribeSecret: "unsub-secret",
         workerId: "test",
         churchId,
       });
@@ -475,6 +491,7 @@ describe.skipIf(!CONNECTION)("email pipeline", () => {
         db,
         mailjet: client,
         appUrl: "https://church.example.com",
+        unsubscribeSecret: "unsub-secret",
         workerId: "test",
         churchId: context.churchId,
       });
@@ -532,12 +549,8 @@ describe.skipIf(!CONNECTION)("email pipeline", () => {
       expect(record.status).toBe("bounced");
 
       expect(await isSuppressed(db, churchId, queued.toEmail)).toBe(true);
-      expect(applied.value.optOut).toEqual([
-        {
-          churchId,
-          personId: person.id,
-          reason: "Their email address does not exist.",
-        },
+      expect(applied.value.optOut).toMatchObject([
+        { churchId, personId: person.id, reason: "Their email address does not exist." },
       ]);
     });
 
@@ -717,10 +730,32 @@ describe("email helpers", () => {
     expect(html).toContain("&amp;");
   });
 
-  it("builds an unsubscribe link without doubling the slash", () => {
-    expect(unsubscribeUrl("https://a.example.com/", "c1", "p1")).toBe(
-      "https://a.example.com/unsubscribe?church=c1&person=p1",
+  it("builds a signed unsubscribe link without doubling the slash", () => {
+    const token = signUnsubscribe("s", { churchId: "c1", personId: "p1" });
+    expect(unsubscribeUrl("https://a.example.com/", "s", { churchId: "c1", personId: "p1" })).toBe(
+      `https://a.example.com/unsubscribe?church=c1&person=p1&token=${token}`,
     );
+  });
+
+  it("refuses an unsubscribe link whose signature does not match", () => {
+    const good = new URL(
+      unsubscribeUrl("https://a.example.com", "s", { churchId: "c1", personId: "p1" }),
+    );
+    expect(verifyUnsubscribe("s", good.searchParams).ok).toBe(true);
+
+    // A guessed person id with the token from somebody else's link.
+    const forged = new URLSearchParams(good.searchParams);
+    forged.set("person", "p2");
+    expect(verifyUnsubscribe("s", forged).ok).toBe(false);
+
+    // Right link, wrong deployment secret.
+    expect(verifyUnsubscribe("other", good.searchParams).ok).toBe(false);
+
+    for (const missing of ["church", "person", "token"]) {
+      const partial = new URLSearchParams(good.searchParams);
+      partial.delete(missing);
+      expect(verifyUnsubscribe("s", partial).ok, missing).toBe(false);
+    }
   });
 });
 

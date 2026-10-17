@@ -1,10 +1,15 @@
 import { timingSafeEqual } from "node:crypto";
-import { createHash } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { createHash, randomUUID } from "node:crypto";
+import { and, eq, sql } from "drizzle-orm";
 import { ok, type Result } from "@/lib/result";
 import type { EmailCommunicationStatus } from "@/types/communication";
 import type { Database } from "@/server/db/client";
-import { emailSuppression, messageOutbox, webhookEvents } from "@/server/db/schema";
+import {
+  emailSuppression,
+  messageOutbox,
+  webhookEvents,
+  webhookInbox,
+} from "@/server/db/schema";
 import { parseCustomId } from "./outbox";
 import { setCommunicationStatus } from "./worker";
 
@@ -24,6 +29,14 @@ import { setCommunicationStatus } from "./worker";
  *
  * What a captured-and-replayed event can therefore achieve is nothing it did
  * not already achieve the first time.
+ *
+ * Field names below follow Mailjet's event reference
+ * (dev.mailjet.com/docs/email-api/webhooks/event-types): every event carries
+ * `event`, `time`, `MessageID`, `Message_GUID`, `email`, `CustomID` and
+ * `Payload`; `bounce` adds `hard_bounce`, `blocked`, `error_related_to`,
+ * `error` and `comment`; `blocked` adds `error_related_to` and `error`;
+ * `spam` adds `source`; `unsub` adds `mj_list_id`. With "group events" on,
+ * the body is a JSON array of these.
  */
 
 /** Mailjet's event names. There is no `delivered`; `sent` is its equivalent. */
@@ -43,10 +56,12 @@ export interface MailjetEvent {
   Message_GUID?: string;
   email?: string;
   CustomID?: string;
-  /** Present on bounce: a hard bounce will not succeed on a later attempt. */
+  /** Bounce only: true when the error was permanent (the address is dead). */
   hard_bounce?: boolean;
-  error?: string;
+  /** Bounce only: true when this bounce led Mailjet to block the recipient. */
+  blocked?: boolean;
   error_related_to?: string;
+  error?: string;
   comment?: string;
 }
 
@@ -65,8 +80,58 @@ const STATUS_FOR_EVENT: Partial<Record<string, EmailCommunicationStatus>> = {
   unsub: "unsubscribed",
 };
 
-/** Events that mean: do not write to this address for this church again. */
-const SUPPRESSING_EVENTS = new Set(["bounce", "blocked", "spam", "unsub"]);
+/**
+ * Whether an event means: do not write to this address for this church again.
+ *
+ * Not every failure is the recipient's. Mailjet's own guidance is to check
+ * `hard_bounce` and `error` before changing a contact's status, because:
+ *
+ * - A *soft* bounce (full mailbox, greylisting, a server that was down) says
+ *   nothing about whether the address exists. Suppressing it would cut a
+ *   person off for their provider's bad afternoon.
+ * - A `blocked` event with `error_related_to` of `content`, `spam`, `policy`
+ *   or `system` is about *our* message or Mailjet's infrastructure, not about
+ *   the recipient. `duplicate in campaign` is Mailjet deduplicating a send.
+ *   None of those is a reason to never write to the person again.
+ *
+ * What does end the relationship: a hard bounce; a block Mailjet applied to
+ * protect the sender (`preblocked`) or because the recipient is dead,
+ * blacklisted or a known spam reporter; a spam complaint; an unsubscribe.
+ */
+export function shouldSuppress(event: MailjetEvent): boolean {
+  switch (event.event) {
+    case "spam":
+    case "unsub":
+      return true;
+    case "bounce":
+      return event.hard_bounce === true || event.blocked === true;
+    case "blocked":
+      return isRecipientProblem(event);
+    default:
+      return false;
+  }
+}
+
+const RECIPIENT_RELATED = new Set(["recipient", "domain", "mailjet"]);
+const RECIPIENT_ERRORS = new Set([
+  "preblocked",
+  "user unknown",
+  "mailbox inactive",
+  "blacklisted",
+  "spam reporter",
+  "invalid domain",
+  "typofix",
+  "no mail host",
+]);
+
+function isRecipientProblem(event: MailjetEvent): boolean {
+  const error = (event.error ?? "").trim().toLowerCase();
+  if (RECIPIENT_ERRORS.has(error)) return true;
+  // Transient: the address may well be fine next time.
+  if (["greylisted", "quota exceeded", "duplicate in campaign"].includes(error)) return false;
+  const relatedTo = (event.error_related_to ?? "").trim().toLowerCase();
+  return RECIPIENT_RELATED.has(relatedTo) && error !== "";
+}
 
 export function constantTimeEquals(a: string, b: string): boolean {
   const left = Buffer.from(a);
@@ -111,9 +176,30 @@ export interface ApplyEventResult {
   applied: number;
   ignored: number;
   duplicates: number;
-  /** People to opt out, for the caller to action through a domain command. */
-  optOut: Array<{ churchId: string; personId: string; reason: string }>;
+  /**
+   * People to opt out, for the caller to action through a domain command.
+   * `eventKey` lets the caller release the event (`releaseEvent`) if that
+   * command fails, so the provider's retry applies it again.
+   */
+  optOut: Array<{ churchId: string; personId: string; reason: string; eventKey: string }>;
 }
+
+/**
+ * What a provider event does to the outbox row. `failed` is reserved for a
+ * send that never left, so the operator's list of things to retry stays
+ * honest; a message the provider took and then reported on keeps its own
+ * word.
+ */
+const OUTBOX_STATUS_FOR: Record<EmailCommunicationStatus, string> = {
+  queued: "pending",
+  sent: "sent",
+  delivered: "sent",
+  bounced: "bounced",
+  blocked: "blocked",
+  spam: "sent",
+  unsubscribed: "sent",
+  failed: "failed",
+};
 
 /**
  * Applies a batch of events.
@@ -153,40 +239,60 @@ export async function applyEvents(
     }
 
     const key = eventKey(event);
-    const inserted = await db
-      .insert(webhookEvents)
-      .values({ id: key, provider: "mailjet", event: name ?? "unknown", outboxId: row.id })
-      .onConflictDoNothing()
-      .returning({ id: webhookEvents.id });
+    const suppress = shouldSuppress(event);
 
-    if (inserted.length === 0) {
+    // The idempotency marker and every effect land in one transaction: a
+    // crash half-way leaves no marker, so the provider's retry does the whole
+    // thing rather than finding "already done" and doing nothing.
+    const applied = await db.transaction(async (tx) => {
+      const inserted = await tx
+        .insert(webhookEvents)
+        .values({ id: key, provider: "mailjet", event: name ?? "unknown", outboxId: row.id })
+        .onConflictDoNothing()
+        .returning({ id: webhookEvents.id });
+      if (inserted.length === 0) return false;
+
+      const now = new Date();
+      const advanced = await setCommunicationStatus(
+        tx as unknown as Database,
+        row.communicationId,
+        status,
+      );
+      // The outbox row follows the record: a report that could not move the
+      // record forward does not move the row either.
+      if (advanced) {
+        await tx
+          .update(messageOutbox)
+          .set({ status: OUTBOX_STATUS_FOR[status], updatedAt: now })
+          .where(eq(messageOutbox.id, row.id));
+      }
+
+      if (suppress) {
+        await tx
+          .insert(emailSuppression)
+          .values({
+            churchId: row.churchId,
+            email: row.toEmail,
+            reason: status,
+            detail: event.error ?? event.comment ?? null,
+            eventAt: now,
+          })
+          .onConflictDoNothing();
+      }
+      return true;
+    });
+
+    if (!applied) {
       outcome.duplicates += 1;
       continue;
     }
 
-    const now = new Date();
-    await setCommunicationStatus(db, row.communicationId, status);
-    await db
-      .update(messageOutbox)
-      .set({ status: status === "delivered" ? "sent" : "failed", updatedAt: now })
-      .where(eq(messageOutbox.id, row.id));
-
-    if (name && SUPPRESSING_EVENTS.has(name)) {
-      await db
-        .insert(emailSuppression)
-        .values({
-          churchId: row.churchId,
-          email: row.toEmail,
-          reason: status,
-          detail: event.error ?? event.comment ?? null,
-          eventAt: now,
-        })
-        .onConflictDoNothing();
-
+    if (suppress) {
       outcome.optOut.push({
         churchId: row.churchId,
         personId: row.personId,
-        reason: suppressionReason(name, event),
+        reason: suppressionReason(name ?? "", event),
+        eventKey: key,
       });
     }
 
@@ -196,6 +302,15 @@ export async function applyEvents(
   return ok(outcome);
 }
 
+/**
+ * Forgets that an event was applied, so the provider's retry applies it
+ * again. Used when the opt-out that follows an event could not be committed:
+ * the suppression already holds, and the retry is what repairs the rest.
+ */
+export async function releaseEvent(db: Database, key: string): Promise<void> {
+  await db.delete(webhookEvents).where(eq(webhookEvents.id, key));
+}
+
 function suppressionReason(name: string, event: MailjetEvent): string {
   switch (name) {
     case "unsub":
@@ -203,7 +318,9 @@ function suppressionReason(name: string, event: MailjetEvent): string {
     case "spam":
       return "They reported the church's email as spam.";
     case "blocked":
-      return "Their mail server blocked the message.";
+      return event.error === "preblocked"
+        ? "Their email address has bounced before and the provider now refuses it."
+        : "Their mail server blocked the message.";
     case "bounce":
       return event.hard_bounce
         ? "Their email address does not exist."
@@ -255,4 +372,45 @@ async function findOutboxRow(
   }
 
   return undefined;
+}
+
+// --- Inbox persistence -----------------------------------------------------
+
+/**
+ * Records a delivery before it is processed, so that a crash half-way through
+ * a batch leaves evidence rather than a gap. Returns the inbox id for the
+ * outcome to be written against.
+ */
+export async function recordDelivery(
+  db: Database,
+  body: unknown,
+  events: number,
+): Promise<string> {
+  const id = randomUUID();
+  await db.insert(webhookInbox).values({
+    id,
+    provider: "mailjet",
+    body: body === undefined ? null : (body as object),
+    events,
+  });
+  return id;
+}
+
+export async function recordOutcome(
+  db: Database,
+  inboxId: string,
+  outcome: { applied: number; ignored: number; duplicates: number; optedOut: number },
+): Promise<void> {
+  await db
+    .update(webhookInbox)
+    .set({ ...outcome, processedAt: sql`now()`, error: null })
+    .where(eq(webhookInbox.id, inboxId));
+}
+
+export async function recordFailure(db: Database, inboxId: string, error: unknown): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error);
+  await db
+    .update(webhookInbox)
+    .set({ processedAt: sql`now()`, error: message.slice(0, 1000) })
+    .where(eq(webhookInbox.id, inboxId));
 }

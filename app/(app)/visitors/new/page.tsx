@@ -1,15 +1,14 @@
 "use client";
 
-import { LinkButton } from "@/components/shared/link-button";
-import { Card, CardContent } from "@/components/ui/card";
+import Link from "next/link";
 import { PageHeader, PageShell } from "@/components/shared/page-header";
 import { RestrictedState } from "@/components/shared/empty-state";
 import { VisitorForm } from "@/components/visitors/visitor-form";
-import { useDemoRole } from "@/hooks/useDemoRole";
+import { useRole } from "@/hooks/useRole";
 
-/** Full visitor registration, used when there is time to take more detail. */
+/** Adding a visitor when there is time to take a little more. */
 export default function NewVisitorPage() {
-  const { can } = useDemoRole();
+  const { can } = useRole();
 
   if (!can("visitors.write")) {
     return (
@@ -20,21 +19,19 @@ export default function NewVisitorPage() {
   }
 
   return (
-    <PageShell className="max-w-3xl">
+    <PageShell className="max-w-2xl">
       <PageHeader
-        title="Register a visitor"
-        description="Only a name is required. Anything else can be added later — nobody should have to hand over their details to be welcomed."
-        actions={
-          <LinkButton variant="outline" size="sm" href="/visitors/quick">
-            Switch to quick registration
-          </LinkButton>
-        }
+        title="Add a visitor"
+        description="A name is enough to start. Nobody has to hand over their details to be welcomed."
       />
-      <Card>
-        <CardContent>
-          <VisitorForm />
-        </CardContent>
-      </Card>
+      <VisitorForm />
+      <p className="text-sm text-muted-foreground">
+        At the welcome desk with a queue?{" "}
+        <Link href="/visitors/quick" className="font-medium text-primary underline-offset-4 hover:underline">
+          Use the quick welcome
+        </Link>
+        .
+      </p>
     </PageShell>
   );
 }

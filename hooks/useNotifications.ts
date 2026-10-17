@@ -27,33 +27,21 @@ export interface AgendaEntry {
  * The reminder list always works from the stored records, so the dashboard
  * shows what is due whether or not browser notifications were ever allowed.
  * A browser notification is only ever raised after the user explicitly asks
- * for it.
+ * for it. Reminders that arrive with the tab closed are Web Push, handled by
+ * `usePushReminders` and the daily run on the server.
  */
 export function useNotifications() {
   const snapshot = useSnapshot();
   const now = useNow();
   const teamMemberId = useSessionStore((state) => state.teamMemberId);
-  // Read once on mount: the value only changes when the user is asked, and
-  // that path sets it explicitly.
-  const [permission, setPermission] = useState<NotificationPermissionState>(() =>
+  // Read once on mount. Permission is asked for when daily reminders are
+  // turned on (see `usePushReminders`); this only decides whether the bell
+  // may raise a notification while the tab is open.
+  const [permission] = useState<NotificationPermissionState>(() =>
     typeof window === "undefined" || !("Notification" in window)
       ? "unsupported"
       : (Notification.permission as NotificationPermissionState),
   );
-
-  const requestPermission = useCallback(async () => {
-    if (typeof window === "undefined" || !("Notification" in window)) {
-      toast.error("This browser does not support notifications.");
-      return;
-    }
-    const result = await Notification.requestPermission();
-    setPermission(result as NotificationPermissionState);
-    if (result === "granted") {
-      toast.success("Reminders enabled for this browser.");
-    } else {
-      toast.info("Reminders stay in the dashboard — nothing will pop up.");
-    }
-  }, []);
 
   const today = toIsoDate(now);
 
@@ -117,5 +105,5 @@ export function useNotifications() {
     toast.info(`${mine.dueToday.length} due today, ${mine.overdue.length} overdue.`);
   }, [mine, permission]);
 
-  return { agenda, mine, permission, requestPermission, notifyDueToday, today };
+  return { agenda, mine, permission, notifyDueToday, today };
 }

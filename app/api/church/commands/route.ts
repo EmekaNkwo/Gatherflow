@@ -1,5 +1,6 @@
 import { headers } from "next/headers";
 import { err } from "@/lib/result";
+import { auditResult, targetOf } from "@/server/audit/audit";
 import { commandFor, isCommandName } from "@/services/commands/registry";
 import { resolveChurchSession } from "@/server/auth/session";
 import { readChurch, runCommand } from "@/server/church/commands";
@@ -40,12 +41,37 @@ export async function POST(request: Request): Promise<Response> {
   const definition = commandFor(name);
 
   const input = parseCommandInput(definition.schema, envelope?.input);
-  if (!input.ok) return respondErr(input.error, input.code);
+  if (!input.ok) {
+    await auditResult(db, { churchId: session.value.churchId, userId: session.value.userId, actorId: session.value.teamMemberId, action: name }, input);
+    return respondErr(input.error, input.code);
+  }
 
-  const outcome = await runCommand({ db, session: session.value }, definition.capability, (
-    snapshot,
-    ctx,
-  ) => definition.run(snapshot, input.value, ctx));
+  let outcome: Awaited<ReturnType<typeof runCommand>>;
+  try {
+    outcome = await runCommand({ db, session: session.value }, definition.capability, (
+      snapshot,
+      ctx,
+    ) => definition.run(snapshot, input.value, ctx));
+  } catch (error: unknown) {
+    outcome = err(
+      `The change could not be saved: ${error instanceof Error ? error.message : String(error)}`,
+      "storage_failed",
+    );
+  }
+
+  // Every attempt is recorded, refused or not: "who tried" is as much a
+  // part of the trail as "who did".
+  await auditResult(
+    db,
+    {
+      churchId: session.value.churchId,
+      userId: session.value.userId,
+      actorId: session.value.teamMemberId,
+      action: name,
+      targetId: targetOf(input.value),
+    },
+    outcome,
+  );
 
   if (!outcome.ok) return respondErr(outcome.error, outcome.code);
 

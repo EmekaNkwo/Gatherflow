@@ -244,7 +244,7 @@ export function recentActivity(snapshot: ChurchSnapshot, limit = 20): ActivityEv
     .slice(0, limit);
 }
 
-/** Counts used by the "my work" summary for the signed-in demo user. */
+/** Counts used by the "my work" summary for the signed-in person. */
 export function personalSummary(
   snapshot: ChurchSnapshot,
   teamMemberId: string,

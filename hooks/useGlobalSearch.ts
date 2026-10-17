@@ -6,7 +6,7 @@ import { useSessionStore } from "@/stores/session-store";
 import { useSnapshot } from "./use-church-data";
 
 /**
- * Debounced global search, scoped to the active demo role.
+ * Debounced global search, scoped to the signed-in role.
  *
  * Pastoral-care records are never searched here: restricted information
  * stays inside the care section.
@@ -25,7 +25,7 @@ export function useGlobalSearch(delayMs = 200) {
   }, [query, delayMs]);
 
   const results = useMemo<SearchResult[]>(
-    () => globalSearch(snapshot, debounced, { role, teamMemberId }),
+    () => globalSearch(snapshot, debounced, { role, teamMemberId: teamMemberId ?? undefined }),
     [snapshot, debounced, role, teamMemberId],
   );
 

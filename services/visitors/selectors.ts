@@ -1,4 +1,5 @@
 import { toIsoDate } from "@/lib/dates";
+import { plainStageName } from "./stage-names";
 import type { CsvColumn } from "@/lib/csv";
 import { normalise } from "@/lib/strings";
 import type { ContactMethod, IsoDate, StageId, TeamMemberId } from "@/types/common";
@@ -90,7 +91,9 @@ export function visitorRows(snapshot: ChurchSnapshot, now: Date): VisitorRow[] {
           ? "Became a member"
           : visitor.closure
             ? CLOSURE_REASON_LABELS[visitor.closure.reason]
-            : (stage?.name ?? "Unknown stage"),
+            : stage
+              ? plainStageName(stage)
+              : "Unknown stage",
         assigneeName: visitor.assignedTo ? team.get(visitor.assignedTo)?.name : undefined,
         nextFollowUpDate: next?.dueDate,
         nextFollowUp: next,

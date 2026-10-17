@@ -1,4 +1,4 @@
-import { BanIcon, FlaskConicalIcon, LockIcon } from "lucide-react";
+import { BanIcon, LockIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "cn";
 import {
@@ -75,20 +75,7 @@ export function OverdueBadge({ days }: { days?: number }) {
   );
 }
 
-/**
- * Marks anything that only pretends to reach the outside world. Messages are
- * never actually sent by this application, and the interface always says so.
- */
-export function SimulatedBadge({ className }: { className?: string }) {
-  return (
-    <Badge variant="outline" className={cn("gap-1", className)}>
-      <FlaskConicalIcon />
-      Simulated
-    </Badge>
-  );
-}
-
-/** Marks information restricted to authorised demo roles. */
+/** Marks information restricted to authorised roles. */
 export function RestrictedBadge({ className }: { className?: string }) {
   return (
     <Badge variant="outline" className={cn("gap-1", className)}>

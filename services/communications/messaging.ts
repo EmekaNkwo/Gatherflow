@@ -138,9 +138,17 @@ export interface LogCommunicationInput {
   body: string;
 }
 
+const CONTACT_LABEL: Partial<Record<ContactMethod, string>> = {
+  whatsapp: "WhatsApp message",
+  sms: "Text message",
+  email: "Email",
+  phone: "Phone call",
+  in_person: "In-person note",
+};
+
 /**
- * Records what actually happened to a message. There is no "delivered"
- * status: the application cannot verify delivery, so it never claims it.
+ * Records what a person did with a draft. A manual status never claims
+ * delivery: the application handed the text over and knows nothing more.
  */
 export function logCommunication(
   snapshot: ChurchSnapshot,
@@ -191,13 +199,13 @@ export function logCommunication(
           type: "communication.logged",
           category: "communication",
           personId: input.personId,
-          summary: `Simulated ${input.channel} message to ${displayName(person)} — ${COMMUNICATION_STATUS_LABELS[
+          summary: `${CONTACT_LABEL[input.channel] ?? "Message"} to ${displayName(person)} — ${COMMUNICATION_STATUS_LABELS[
             input.status
           ].toLowerCase()}.`,
         }),
       ]),
       [],
-      [`${COMMUNICATION_STATUS_LABELS[input.status]} recorded (simulated).`],
+      [`${COMMUNICATION_STATUS_LABELS[input.status]} recorded.`],
     ),
   );
 }

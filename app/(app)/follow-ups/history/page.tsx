@@ -13,8 +13,8 @@ export default function FollowUpHistoryPage() {
 
   return (
     <TasksView
-      title="Follow-up history"
-      description="What has already been done, and how each conversation ended. Cancelled tasks are kept so the reason stays visible."
+      title="Finished follow-ups"
+      description="What has been done, and how each conversation ended."
       baseFilters={baseFilters}
       lockDue
       emptyTitle="No completed follow-ups yet"

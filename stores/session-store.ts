@@ -1,86 +1,39 @@
 "use client";
 
 import { create } from "zustand";
-import { TEAM_IDS } from "@/data/seed";
 import { capabilitiesFor, can, taskScope } from "@/lib/permissions";
-import { createLocalStorage } from "@/services/repositories/storage";
-import { STORAGE_NAMESPACE } from "@/services/repositories/collection";
 import type { Capability, DemoRole } from "@/types/team";
-import { setActorResolver } from "./church-store";
+import { setSessionAdopter } from "./church-store";
 
 /**
- * The simulated session: which demo role is being used and which team
- * member actions are recorded against.
+ * Who the signed-in account is acting as.
  *
- * This is a demonstration of role-based *interfaces*, not security. The
- * value lives in the browser and the README says so plainly.
+ * Both fields come from the server with every church load — the role from
+ * the membership row, the team member from the link the administrator made —
+ * and nothing here can change them. What the interface does with them is
+ * advisory: it hides what the server would refuse anyway.
  */
 export interface SessionStore {
   role: DemoRole;
-  teamMemberId: string;
-  /** Mirrors the stored preference once hydration has run. */
-  hydrated: boolean;
+  teamMemberId: string | null;
+  /** True once the server has said who this is. */
+  resolved: boolean;
 
-  hydrate: () => void;
-  switchRole: (role: DemoRole) => void;
-  setTeamMember: (teamMemberId: string, role: DemoRole) => void;
+  adoptServerSession: (role: DemoRole, teamMemberId: string | null) => void;
   can: (capability: Capability) => boolean;
   capabilities: () => readonly Capability[];
   taskScope: () => "all" | "own" | "none";
 }
 
-const SESSION_KEY = `${STORAGE_NAMESPACE}:session`;
-
-const DEFAULT_MEMBER_BY_ROLE: Record<DemoRole, string> = {
-  administrator: TEAM_IDS.admin,
-  pastor: TEAM_IDS.pastor,
-  follow_up_coordinator: TEAM_IDS.coordinator,
-  volunteer: TEAM_IDS.volunteerAmara,
-  member: TEAM_IDS.member,
-};
-
-function readStored(): { role: DemoRole; teamMemberId: string } | null {
-  const adapter = createLocalStorage();
-  const raw = adapter.getItem(SESSION_KEY);
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as { role?: string; teamMemberId?: string };
-    if (!parsed.role || !(parsed.role in DEFAULT_MEMBER_BY_ROLE)) return null;
-    const role = parsed.role as DemoRole;
-    return { role, teamMemberId: parsed.teamMemberId ?? DEFAULT_MEMBER_BY_ROLE[role] };
-  } catch {
-    return null;
-  }
-}
-
-function persist(role: DemoRole, teamMemberId: string): void {
-  createLocalStorage().setItem(SESSION_KEY, JSON.stringify({ role, teamMemberId }));
-}
-
 export const useSessionStore = create<SessionStore>((set, get) => ({
-  role: "follow_up_coordinator",
-  teamMemberId: TEAM_IDS.coordinator,
-  hydrated: false,
+  // Until the server answers, the least capable role: nothing is offered
+  // that might then be refused.
+  role: "member",
+  teamMemberId: null,
+  resolved: false,
 
-  hydrate: () => {
-    if (get().hydrated) return;
-    const stored = readStored();
-    set({
-      role: stored?.role ?? "follow_up_coordinator",
-      teamMemberId: stored?.teamMemberId ?? TEAM_IDS.coordinator,
-      hydrated: true,
-    });
-  },
-
-  switchRole: (role) => {
-    const teamMemberId = DEFAULT_MEMBER_BY_ROLE[role];
-    persist(role, teamMemberId);
-    set({ role, teamMemberId });
-  },
-
-  setTeamMember: (teamMemberId, role) => {
-    persist(role, teamMemberId);
-    set({ teamMemberId, role });
+  adoptServerSession: (role, teamMemberId) => {
+    set({ role, teamMemberId, resolved: true });
   },
 
   can: (capability) => can(get().role, capability),
@@ -88,5 +41,6 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   taskScope: () => taskScope(get().role),
 }));
 
-// Commands are always recorded against the acting team member.
-setActorResolver(() => useSessionStore.getState().teamMemberId);
+setSessionAdopter((role, teamMemberId) =>
+  useSessionStore.getState().adoptServerSession(role, teamMemberId),
+);

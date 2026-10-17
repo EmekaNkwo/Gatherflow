@@ -4,11 +4,7 @@ import { useCallback } from "react";
 import { toast } from "sonner";
 import type { Result } from "@/lib/result";
 import type { CommandResult } from "@/services/core/events";
-import type {
-  CommandInput,
-  CommandName,
-  CommandResultOf,
-} from "@/services/commands/registry";
+import type { CommandInput, CommandName, CommandResultOf } from "@/services/commands/registry";
 import { useChurchStore } from "@/stores/church-store";
 import type { ChurchSnapshot } from "@/types/snapshot";
 
@@ -16,7 +12,7 @@ import type { ChurchSnapshot } from "@/types/snapshot";
  * Base access to church data.
  *
  * Feature hooks build on these two primitives: `useSnapshot` for reading and
- * `useCommand` for writing. No component reads the store or the repository
+ * `useCommand` for writing. No component reads the store or the transport
  * directly.
  */
 export function useSnapshot(): ChurchSnapshot {
@@ -34,6 +30,7 @@ export function useIsReady(): boolean {
 }
 
 export interface CommandOptions {
+  /** Kept for call sites written when undo existed; ignored. */
   undoLabel?: string;
   silent?: boolean;
   successMessage?: string;
@@ -41,69 +38,43 @@ export interface CommandOptions {
 
 export interface CommandRunner {
   /**
-   * Runs a named domain command, shows the result as a toast and returns it so
-   * callers can close dialogs or navigate on success.
-   *
-   * Asynchronous because in server-backed mode the command is decided by the
-   * server. In local mode it still resolves immediately.
+   * Runs a named domain command on the server, shows the result as a toast
+   * and returns it so callers can close dialogs or navigate on success.
    */
   dispatch: <N extends CommandName>(
     name: N,
     input: CommandInput<N>,
     options?: CommandOptions,
   ) => Promise<Result<CommandResultOf<N>>>;
-  undo: () => void;
-  canUndo: boolean;
-  undoLabel?: string;
 }
 
 export function useCommand(): CommandRunner {
   const dispatchCommand = useChurchStore((state) => state.dispatch);
-  const undoCommand = useChurchStore((state) => state.undo);
-  const undoEntry = useChurchStore((state) => state.undoEntry);
 
-  const undo = useCallback(() => {
-    const outcome = undoCommand();
-    if (outcome.ok) toast.success(`Undone: ${outcome.value}`);
-    else toast.error(outcome.error);
-  }, [undoCommand]);
+  const report = useCallback((outcome: Result<CommandResult>, options?: CommandOptions) => {
+    if (!outcome.ok) {
+      toast.error(outcome.error);
+      return;
+    }
+    if (options?.silent) return;
 
-  /**
-   * Reports a command's outcome. Shared by both forms so a refusal and a
-   * success are presented identically however the command was invoked.
-   */
-  const report = useCallback(
-    (outcome: Result<CommandResult>, options?: CommandOptions) => {
-      if (!outcome.ok) {
-        toast.error(outcome.error);
-        return;
-      }
-      if (options?.silent) return;
+    const [headline, ...rest] = options?.successMessage
+      ? [options.successMessage, ...outcome.value.notices]
+      : outcome.value.notices;
 
-      const [headline, ...rest] = options?.successMessage
-        ? [options.successMessage, ...outcome.value.notices]
-        : outcome.value.notices;
-
-      if (headline) {
-        toast.success(headline, {
-          description: rest.length ? rest.join(" ") : undefined,
-          action: options?.undoLabel ? { label: "Undo", onClick: () => undo() } : undefined,
-        });
-      }
-    },
-    [undo],
-  );
+    if (headline) {
+      toast.success(headline, { description: rest.length ? rest.join(" ") : undefined });
+    }
+  }, []);
 
   const dispatch = useCallback<CommandRunner["dispatch"]>(
     async (name, input, options) => {
-      const outcome = await dispatchCommand(name, input, {
-        undoLabel: options?.undoLabel,
-      });
+      const outcome = await dispatchCommand(name, input);
       report(outcome, options);
       return outcome;
     },
     [dispatchCommand, report],
   );
 
-  return { dispatch, undo, canUndo: Boolean(undoEntry), undoLabel: undoEntry?.label };
+  return { dispatch };
 }

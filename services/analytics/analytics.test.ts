@@ -62,6 +62,32 @@ describe("attendance aggregation", () => {
     expect(trend.at(-1)?.members).toBe(1);
   });
 
+  it("counts somebody as a member only from their membership date", () => {
+    // Joined on 1 Oct: a visitor on 28 Sep, a member on 5 and 12 Oct.
+    const data = history();
+    const joined = {
+      ...data,
+      people: data.people.map((person) =>
+        person.member ? { ...person, member: { ...person.member, membershipDate: "2026-10-01" } } : person,
+      ),
+    };
+
+    expect(sessionSummary(joined, "s1")).toMatchObject({ total: 2, members: 0, visitors: 2 });
+    expect(sessionSummary(joined, "s2")).toMatchObject({ total: 2, members: 1, visitors: 1 });
+    expect(attendanceTrend(joined, NOW, 3).map((point) => point.members)).toEqual([0, 1, 1]);
+  });
+
+  it("counts a member who joined on the day of a session as a member at it", () => {
+    const data = history();
+    const sameDay = {
+      ...data,
+      people: data.people.map((person) =>
+        person.member ? { ...person, member: { ...person.member, membershipDate: "2026-09-28" } } : person,
+      ),
+    };
+    expect(sessionSummary(sameDay, "s1")).toMatchObject({ members: 1, visitors: 1 });
+  });
+
   it("averages only the weeks that actually had a session", () => {
     const average = averageWeeklyAttendance(history(), NOW, 10);
     expect(average.weeksCounted).toBe(3);

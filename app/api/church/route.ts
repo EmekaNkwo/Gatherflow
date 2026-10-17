@@ -2,6 +2,7 @@ import { headers } from "next/headers";
 import { resolveChurchSession } from "@/server/auth/session";
 import { readChurch } from "@/server/church/commands";
 import { getDatabase } from "@/server/db/client";
+import { emailAvailability } from "@/server/email/mailjet";
 import { respondErr, respondOk } from "@/server/http/respond";
 
 /**
@@ -23,5 +24,13 @@ export async function GET(): Promise<Response> {
     version: loaded.version,
     seeded: loaded.seeded,
     report: loaded.report,
+    // Whether the interface may offer to send email. Decided here, not in the
+    // browser, so a build cannot bake in an answer the deployment disagrees with.
+    email: emailAvailability(),
+    memberships: session.value.memberships,
+    churchId: session.value.churchId,
+    // Who the server will treat this request as. Advisory for the interface
+    // (which buttons to show); the decision stays on the server.
+    actingAs: { role: session.value.role, teamMemberId: session.value.teamMemberId },
   });
 }

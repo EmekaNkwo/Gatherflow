@@ -63,21 +63,17 @@ export interface MessageTemplate {
  * What actually happened with a message.
  *
  * Two groups, and the distinction matters. The *manual* statuses describe what
- * a person did with a draft: the application handed it over and cannot know
- * any more than that. The *email* statuses describe a real send through a
- * provider, and each one corresponds to something the provider actually told
- * us — none is inferred.
+ * a person did with a draft — copied it, opened it in their own messaging app
+ * — because the application handed it over and cannot know any more than
+ * that. The *email* statuses describe a real send through a provider, and each
+ * one corresponds to something the provider actually told us — none is inferred.
  *
  * `sent` means our provider accepted the request. `delivered` means the
  * receiving mail server accepted the message, which is the strongest claim
  * available: Mailjet reports it as its `sent` event, and there is no later
  * "the human read it" signal that could honestly be recorded.
  */
-export type ManualCommunicationStatus =
-  | "drafted"
-  | "copied"
-  | "opened_external"
-  | "simulated_sent";
+export type ManualCommunicationStatus = "drafted" | "copied" | "opened_external";
 
 export type EmailCommunicationStatus =
   | "queued"
@@ -96,7 +92,6 @@ export const MANUAL_COMMUNICATION_STATUSES: readonly ManualCommunicationStatus[]
   "drafted",
   "copied",
   "opened_external",
-  "simulated_sent",
 ];
 
 export const EMAIL_COMMUNICATION_STATUSES: readonly EmailCommunicationStatus[] = [
@@ -113,8 +108,7 @@ export const EMAIL_COMMUNICATION_STATUSES: readonly EmailCommunicationStatus[] =
 export const COMMUNICATION_STATUS_LABELS: Record<CommunicationStatus, string> = {
   drafted: "Draft prepared",
   copied: "Copied to clipboard",
-  opened_external: "Opened in external app",
-  simulated_sent: "Simulated send",
+  opened_external: "Opened in your messaging app",
   queued: "Queued to send",
   sent: "Sent to the provider",
   delivered: "Delivered to their mail server",
@@ -146,9 +140,10 @@ export interface CommunicationLogEntry {
   at: IsoDateTime;
   actorId: TeamMemberId;
   /**
-   * `true` when nothing left the building — a draft, a copy, or a simulated
-   * send. A real provider send records `false`, and the interface badges the
-   * two differently so a reader is never misled about what happened.
+   * `true` when the application itself sent nothing — a draft, a copy, or a
+   * hand-over to the person's own messaging app. A real provider send records
+   * `false`, and the interface labels the two differently so a reader is
+   * never misled about what happened.
    */
   simulated: boolean;
 }

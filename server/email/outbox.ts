@@ -1,4 +1,4 @@
-import { and, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, count, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { err, ok, type Result } from "@/lib/result";
 import { createId } from "@/lib/ids";
 import { displayName } from "@/lib/strings";
@@ -109,6 +109,70 @@ export function queueEmailCommand(
   });
 }
 
+/**
+ * Volume limits, as a brake on a bug or a misused account.
+ *
+ * Opt-in consent and the suppression list protect each *person*; nothing
+ * above protects the *church* from a script that queues a thousand messages
+ * in a loop, which would burn the provider quota and the domain's reputation
+ * in one afternoon. Two limits, both read from the outbox so every instance
+ * sees the same count: how many a church may queue in an hour, and how soon
+ * the same person may be written to again.
+ */
+export const RATE_LIMITED = "rate_limited";
+export const DEFAULT_HOURLY_LIMIT = 200;
+export const DEFAULT_PERSON_COOLDOWN_MINUTES = 10;
+
+export interface SendLimits {
+  perChurchPerHour?: number;
+  perPersonCooldownMinutes?: number;
+}
+
+export async function checkSendLimits(
+  db: Database,
+  churchId: string,
+  personId: string,
+  limits: SendLimits = {},
+): Promise<Result<void>> {
+  const hourly = limits.perChurchPerHour ?? DEFAULT_HOURLY_LIMIT;
+  const cooldown = limits.perPersonCooldownMinutes ?? DEFAULT_PERSON_COOLDOWN_MINUTES;
+
+  const [recent] = await db
+    .select({ total: count() })
+    .from(messageOutbox)
+    .where(
+      and(
+        eq(messageOutbox.churchId, churchId),
+        gte(messageOutbox.createdAt, sql`now() - interval '1 hour'`),
+      ),
+    );
+  if ((recent?.total ?? 0) >= hourly) {
+    return err(
+      `This church has queued ${hourly} emails in the last hour, which is its limit. Try again later.`,
+      RATE_LIMITED,
+    );
+  }
+
+  const [samePerson] = await db
+    .select({ total: count() })
+    .from(messageOutbox)
+    .where(
+      and(
+        eq(messageOutbox.churchId, churchId),
+        eq(messageOutbox.personId, personId),
+        gte(messageOutbox.createdAt, sql`now() - make_interval(mins => ${cooldown})`),
+      ),
+    );
+  if ((samePerson?.total ?? 0) > 0) {
+    return err(
+      `An email to this person was queued less than ${cooldown} minutes ago. Wait before sending another.`,
+      RATE_LIMITED,
+    );
+  }
+
+  return ok(undefined);
+}
+
 /** Addresses this church must not write to again. */
 export async function suppressedAddresses(
   db: Database,
@@ -173,22 +237,6 @@ export async function insertOutboxRow(
 
 export function outboxCustomId(churchId: string, outboxId: string): string {
   return `${churchId}:${outboxId}`;
-}
-
-/**
- * The one-click unsubscribe link carried by every send.
- *
- * Opt-in consent is already how a person ends up receiving anything; this is
- * the matching way out, and mail providers increasingly require it before
- * they will treat bulk mail as legitimate.
- */
-export function unsubscribeUrl(
-  appUrl: string,
-  churchId: string,
-  personId: string,
-): string {
-  const base = appUrl.replace(/\/$/, "");
-  return `${base}/unsubscribe?church=${encodeURIComponent(churchId)}&person=${encodeURIComponent(personId)}`;
 }
 
 /** Reverses `outboxCustomId`, refusing anything that is not one of ours. */

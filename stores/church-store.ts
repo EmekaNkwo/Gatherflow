@@ -1,174 +1,139 @@
 "use client";
 
 import { create } from "zustand";
-import { createSeedSnapshot } from "@/data/seed";
 import { err, ok, type Result } from "@/lib/result";
-import { runAutomations } from "@/services/automation/rules";
-import { createCommandContext } from "@/services/core/context";
 import type { LoadReport } from "@/services/repositories/collection";
-import {
-  createSnapshotRepository,
-  type ExportBundle,
-  type SnapshotRepository,
-} from "@/services/repositories/snapshot-repository";
-import { createLocalStorage, type StorageAdapter } from "@/services/repositories/storage";
-import { fetchChurch, postCommand } from "@/services/commands/client";
-import {
-  COMMANDS,
-  type CommandInput,
-  type CommandName,
-  type CommandResultOf,
-} from "@/services/commands/registry";
+import { fetchChurch, postCommand, postEmail } from "@/services/commands/client";
+import type { CommandInput, CommandName, CommandResultOf } from "@/services/commands/registry";
 import type { ChurchSnapshot } from "@/types/snapshot";
+import type { DemoRole } from "@/types/team";
+import {
+  EMAIL_UNAVAILABLE,
+  type EmailAvailability,
+  type SendEmailReceipt,
+  type SendEmailRequest,
+} from "@/types/email";
 
 /**
- * The single source of truth for church data.
+ * The single source of truth for church data in the browser.
  *
  * Components never mutate this state. They call `dispatch` with a command
- * name and its input; the authority — the registry locally, the server
- * remotely — produces the next snapshot. Because every mutation goes through
- * here, the automation rules can never fire twice for the same action.
+ * name and its input; the server authorises it, re-runs the rules itself and
+ * returns the new snapshot. The browser never tells the server what the
+ * answer is, and nothing lives here that the server does not know.
  */
-export interface CommandOutcome {
-  notices: string[];
+export interface ActingAs {
+  role: DemoRole;
+  teamMemberId: string | null;
 }
-
-interface UndoEntry {
-  snapshot: ChurchSnapshot;
-  label: string;
-}
-
-/**
- * Where the church lives.
- *
- * `local` keeps everything in the browser, which is what the public demo runs
- * on: no account, no server, no setup. `remote` sends every command to the
- * server, which authorises it, re-runs the rules itself and decides the new
- * state. The browser never tells the server what the answer is.
- */
-export type ChurchMode = "local" | "remote";
 
 export interface ChurchStore {
   snapshot: ChurchSnapshot | null;
   status: "idle" | "loading" | "ready" | "unavailable";
+  /** True when this church was just created and has nothing in it yet. */
   seeded: boolean;
   report: LoadReport | null;
-  undoEntry: UndoEntry | null;
   /** Notices from the most recent command, for toast display. */
   lastNotices: string[];
-  mode: ChurchMode;
-  /** Set when the remote church could not be loaded. */
+  /** Set when the church could not be loaded. */
   loadError: string | null;
-  /** The server's version at the last load; null in local mode. */
+  /** The refusal code behind `loadError`, so "not signed in" can be told apart. */
+  loadErrorCode: string | null;
+  /** The server's version at the last load. */
   remoteVersion: number | null;
+  /** The church the session opened. */
+  churchId: string | null;
+  /** Whether the server offers to send email. */
+  email: EmailAvailability;
+  /** Churches the signed-in account belongs to. */
+  memberships: number;
+  /** The role and team member the server resolved for this session. */
+  actingAs: ActingAs | null;
 
   hydrate: () => Promise<void>;
+  /** Re-reads the church from the server, e.g. after another tab changed it. */
+  refresh: () => Promise<void>;
   /**
-   * Runs a named command.
-   *
-   * Named rather than passed as a function, because a closure cannot cross a
-   * network. In `local` mode the name is looked up in the registry and run
-   * here; in `remote` mode it is posted to the server, which looks up the same
-   * entry. Both paths therefore run identical rules.
+   * Runs a named command on the server. Named rather than passed as a
+   * function, because a closure cannot cross a network.
    */
   dispatch: <N extends CommandName>(
     name: N,
     input: CommandInput<N>,
-    options?: { undoLabel?: string },
   ) => Promise<Result<CommandResultOf<N>>>;
-  undo: () => Result<string>;
-  reset: () => void;
-  exportBundle: () => ExportBundle | null;
-  importBundle: (raw: unknown) => Result<string>;
-  /** Replaces the storage adapter — used by tests. */
-  configureStorage: (adapter: StorageAdapter, now?: () => Date) => void;
-  /** Switches to the server-backed mode. Called once, during startup. */
-  configureMode: (mode: ChurchMode) => void;
+  /** Queues a real email through the server. */
+  sendEmail: (input: SendEmailRequest) => Promise<Result<SendEmailReceipt>>;
 }
 
-let repository: SnapshotRepository | null = null;
-let clock: () => Date = () => new Date();
+/**
+ * Applies the server-resolved role before the church is marked ready, so no
+ * render ever sees a stale role. Registered by the session store, which
+ * this module cannot import without a cycle.
+ */
+let sessionAdopter: (role: DemoRole, teamMemberId: string | null) => void = () => undefined;
 
-function getRepository(): SnapshotRepository {
-  repository ??= createSnapshotRepository(createLocalStorage(), () => createSeedSnapshot(clock()));
-  return repository;
+export function setSessionAdopter(adopt: typeof sessionAdopter): void {
+  sessionAdopter = adopt;
 }
 
-/** The team member whose identity commands are recorded against. */
-let actorResolver: () => string = () => "tm_admin_ruth";
-
-export function setActorResolver(resolve: () => string): void {
-  actorResolver = resolve;
-}
-
-export const useChurchStore = create<ChurchStore>((set, get) => ({
-  snapshot: null,
-  status: "idle",
-  seeded: false,
-  report: null,
-  undoEntry: null,
-  lastNotices: [],
-  // Local by default: the public demo must work with no account and no server.
-  mode: "local",
-  loadError: null,
-  remoteVersion: null,
-
-  hydrate: async () => {
-    if (get().status === "ready" || get().status === "loading") return;
-
-    if (get().mode === "remote") {
-      set({ status: "loading", loadError: null });
-      const loaded = await fetchChurch();
-      if (!loaded.ok) {
-        // Nothing is invented on failure: an empty church would look like a
-        // real one, and the user would edit a fiction.
-        set({ status: "unavailable", loadError: loaded.error, snapshot: null });
-        return;
-      }
+export const useChurchStore = create<ChurchStore>((set, get) => {
+  async function load(): Promise<void> {
+    set({ status: "loading", loadError: null, loadErrorCode: null });
+    const loaded = await fetchChurch();
+    if (!loaded.ok) {
+      // Nothing is invented on failure: an empty church would look like a
+      // real one, and the user would edit a fiction.
       set({
-        snapshot: loaded.value.snapshot,
-        seeded: loaded.value.seeded,
-        report: loaded.value.report,
-        remoteVersion: loaded.value.version,
-        status: "ready",
+        status: "unavailable",
+        loadError: loaded.error,
+        loadErrorCode: loaded.code ?? null,
+        snapshot: null,
       });
       return;
     }
-
-    const loaded = getRepository().load();
-
-    // Records that failed validation were dropped from the snapshot. Write
-    // the cleaned data back, so the problem is actually repaired rather than
-    // re-reported on every reload.
-    if (loaded.report.dropped > 0) {
-      getRepository().save(null, loaded.snapshot);
+    if (loaded.value.actingAs) {
+      sessionAdopter(loaded.value.actingAs.role, loaded.value.actingAs.teamMemberId);
     }
-
     set({
-      snapshot: loaded.snapshot,
-      seeded: loaded.seeded,
-      report: loaded.report,
+      snapshot: loaded.value.snapshot,
+      seeded: loaded.value.seeded,
+      report: loaded.value.report,
+      remoteVersion: loaded.value.version,
+      churchId: loaded.value.churchId ?? null,
+      email: loaded.value.email ?? EMAIL_UNAVAILABLE,
+      memberships: loaded.value.memberships ?? 1,
+      actingAs: loaded.value.actingAs ?? null,
       status: "ready",
     });
-  },
+  }
 
-  dispatch: async (name, input, options) => {
-    type Outcome = Result<CommandResultOf<typeof name>>;
+  return {
+    snapshot: null,
+    status: "idle",
+    seeded: false,
+    report: null,
+    lastNotices: [],
+    loadError: null,
+    loadErrorCode: null,
+    remoteVersion: null,
+    churchId: null,
+    email: EMAIL_UNAVAILABLE,
+    memberships: 1,
+    actingAs: null,
 
-    if (get().mode === "remote") {
+    hydrate: async () => {
+      if (get().status === "ready" || get().status === "loading") return;
+      await load();
+    },
+
+    refresh: load,
+
+    dispatch: async (name, input) => {
+      type Outcome = Result<CommandResultOf<typeof name>>;
       const posted = await postCommand(name, input);
       if (!posted.ok) return posted as Outcome;
 
-      const previous = get().snapshot;
-      set({
-        snapshot: posted.value.snapshot,
-        lastNotices: posted.value.notices,
-        // Undo is local-only: the server is the authority on its own history,
-        // and replaying a stale snapshot over it would discard other people's
-        // work. Offering the button here would be a lie.
-        undoEntry: null,
-      });
-      void previous;
+      set({ snapshot: posted.value.snapshot, lastNotices: posted.value.notices });
 
       return ok({
         snapshot: posted.value.snapshot,
@@ -176,99 +141,22 @@ export const useChurchStore = create<ChurchStore>((set, get) => ({
         notices: posted.value.notices,
         ...posted.value.data,
       } as CommandResultOf<typeof name>);
-    }
+    },
 
-    const { snapshot } = get();
-    if (!snapshot) return err("The church data is still loading.", "not_ready") as Outcome;
-
-    const definition = COMMANDS[name];
-    const ctx = createCommandContext({ actorId: actorResolver(), now: clock() });
-
-    const outcome = definition.run(snapshot, input as never, ctx) as Outcome;
-    if (!outcome.ok) return outcome;
-
-    // Automations run exactly once per command, against the events the
-    // command reported — never off the back of a re-render.
-    const automated = runAutomations(outcome.value.snapshot, outcome.value.events, ctx);
-    const notices = [...outcome.value.notices, ...automated.notices];
-
-    getRepository().save(snapshot, automated.snapshot);
-
-    set({
-      snapshot: automated.snapshot,
-      lastNotices: notices,
-      undoEntry: options?.undoLabel
-        ? { snapshot, label: options.undoLabel }
-        : get().undoEntry,
-    });
-
-    return ok({
-      ...outcome.value,
-      snapshot: automated.snapshot,
-      notices,
-    }) as Outcome;
-  },
-
-  undo: () => {
-    const entry = get().undoEntry;
-    if (!entry) return err("There is nothing to undo.", "empty");
-    getRepository().save(get().snapshot, entry.snapshot);
-    set({ snapshot: entry.snapshot, undoEntry: null, lastNotices: [`Undone: ${entry.label}.`] });
-    return ok(entry.label);
-  },
-
-  reset: () => {
-    const snapshot = getRepository().reset();
-    set({
-      snapshot,
-      seeded: true,
-      undoEntry: null,
-      report: { dropped: 0, issues: [] },
-      lastNotices: ["Demo data restored to the original seed."],
-    });
-  },
-
-  exportBundle: () => {
-    const { snapshot } = get();
-    return snapshot ? getRepository().exportBundle(snapshot) : null;
-  },
-
-  importBundle: (raw) => {
-    const { snapshot } = get();
-    if (!snapshot) return err("The church data is still loading.", "not_ready");
-
-    const imported = getRepository().importBundle(raw, snapshot);
-    if (!imported.ok) return imported;
-
-    getRepository().save(null, imported.value);
-    set({
-      snapshot: imported.value,
-      undoEntry: { snapshot, label: "data import" },
-      lastNotices: ["Demo data imported. Pastoral-care records were not included."],
-    });
-    return ok("Data imported.");
-  },
-
-  configureStorage: (adapter, now) => {
-    clock = now ?? (() => new Date());
-    repository = createSnapshotRepository(adapter, () => createSeedSnapshot(clock()));
-    set({ snapshot: null, status: "idle", undoEntry: null, lastNotices: [] });
-  },
-
-  configureMode: (mode) => {
-    set({
-      mode,
-      snapshot: null,
-      status: "idle",
-      undoEntry: null,
-      lastNotices: [],
-      loadError: null,
-      remoteVersion: null,
-    });
-  },
-}));
+    sendEmail: async (input) => {
+      const posted = await postEmail(input);
+      if (!posted.ok) return posted;
+      set({ snapshot: posted.value.snapshot, lastNotices: posted.value.notices });
+      return ok(posted.value.data);
+    },
+  };
+});
 
 /** Reads the snapshot outside React (tests, one-off exports). */
 export function currentSnapshot(): ChurchSnapshot | null {
   return useChurchStore.getState().snapshot;
+}
+
+export function notReady<T>(): Result<T> {
+  return err("The church data is still loading.", "not_ready");
 }

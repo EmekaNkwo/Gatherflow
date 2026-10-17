@@ -18,10 +18,8 @@ export function PageHeader({ title, description, actions, className }: PageHeade
       )}
     >
       <div className="space-y-1">
-        <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
-        {description ? (
-          <p className="max-w-2xl text-sm text-muted-foreground">{description}</p>
-        ) : null}
+        <h1 className="text-[1.75rem] leading-tight font-medium md:text-3xl">{title}</h1>
+        {description ? <p className="max-w-2xl text-muted-foreground">{description}</p> : null}
       </div>
       {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
     </div>
@@ -30,7 +28,7 @@ export function PageHeader({ title, description, actions, className }: PageHeade
 
 /** Page shell: consistent padding and vertical rhythm. */
 export function PageShell({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cn("space-y-6 p-4 lg:p-6", className)}>{children}</div>;
+  return <div className={cn("mx-auto w-full max-w-6xl space-y-8 px-4 py-6 md:px-6 lg:px-8", className)}>{children}</div>;
 }
 
 interface SectionProps {
@@ -46,10 +44,8 @@ export function Section({ title, description, actions, children, className }: Se
     <section className={cn("space-y-3", className)}>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-sm font-semibold tracking-tight">{title}</h2>
-          {description ? (
-            <p className="text-xs text-muted-foreground">{description}</p>
-          ) : null}
+          <h2 className="text-xl font-medium">{title}</h2>
+          {description ? <p className="text-sm text-muted-foreground">{description}</p> : null}
         </div>
         {actions ? <div className="flex items-center gap-2">{actions}</div> : null}
       </div>

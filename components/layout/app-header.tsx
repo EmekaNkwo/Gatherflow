@@ -1,94 +1,72 @@
 "use client";
 
-import { BellIcon, SparklesIcon, Undo2Icon } from "lucide-react";
+import Link from "next/link";
+import { BellIcon, CircleUserIcon } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { LinkButton } from "@/components/shared/link-button";
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { Badge } from "@/components/ui/badge";
-import { useCommand } from "@/hooks/use-church-data";
+import { useSnapshot } from "@/hooks/use-church-data";
 import { useNotifications } from "@/hooks/useNotifications";
+import { BrandMark } from "./brand-mark";
 import { CommandPalette } from "./command-palette";
 import { QuickActions } from "./quick-actions";
-import { RoleSwitcher } from "./role-switcher";
 
-/** Top bar: search, reminders, undo, role switching and quick actions. */
+/**
+ * Top bar. On a phone it is just the church, search and your account — the
+ * tab bar at the bottom does the rest. From medium screens up it adds the
+ * reminders bell and the "New" menu. Switching church lives in the menu.
+ */
 export function AppHeader() {
   const { mine, notifyDueToday } = useNotifications();
-  const { undo, canUndo, undoLabel } = useCommand();
+  const snapshot = useSnapshot();
   const outstanding = mine.dueToday.length + mine.overdue.length;
 
   return (
-    <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-1.5 border-b bg-background/95 px-3 backdrop-blur sm:gap-2 sm:px-4 lg:px-6">
-      <SidebarTrigger className="-ml-1" />
-      <Separator orientation="vertical" className="mr-1 h-5" />
+    <header className="sticky top-0 z-30 flex h-16 shrink-0 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur lg:px-6">
+      <SidebarTrigger className="-ml-1 hidden md:inline-flex" />
+      <Separator orientation="vertical" className="mr-1 hidden h-5 md:block" />
 
-      <div className="min-w-0 flex-1">
+      <Link href="/dashboard" className="flex min-w-0 flex-1 items-center gap-2.5 md:hidden">
+        <BrandMark className="size-8" />
+        <span className="truncate font-heading text-lg">{snapshot.settings.churchName}</span>
+      </Link>
+
+      <div className="flex items-center md:min-w-0 md:flex-1">
         <CommandPalette />
       </div>
 
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={notifyDueToday}
-              aria-label={`Reminders: ${outstanding} items need attention`}
-              className="relative"
-            >
-              <BellIcon />
-              {outstanding ? (
-                <Badge
-                  variant="destructive"
-                  className="absolute -top-1 -right-1 h-4 min-w-4 px-1 text-[10px]"
-                >
-                  {outstanding}
-                </Badge>
-              ) : null}
-            </Button>
-          }
-        />
-        <TooltipContent>
-          {outstanding
-            ? `${mine.dueToday.length} due today, ${mine.overdue.length} overdue`
-            : "Nothing due for you"}
-        </TooltipContent>
-      </Tooltip>
-
-      {canUndo ? (
+      <div className="hidden items-center gap-1.5 md:flex">
         <Tooltip>
           <TooltipTrigger
             render={
-              <Button variant="ghost" size="icon-sm" onClick={undo} aria-label="Undo last change">
-                <Undo2Icon />
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={notifyDueToday}
+                aria-label={`Reminders: ${outstanding} waiting for you`}
+                className="relative"
+              >
+                <BellIcon />
+                {outstanding ? (
+                  <Badge className="absolute -top-1 -right-1 h-4 min-w-4 px-1 text-[10px]">{outstanding}</Badge>
+                ) : null}
               </Button>
             }
           />
-          <TooltipContent>Undo {undoLabel}</TooltipContent>
+          <TooltipContent>
+            {outstanding ? `${mine.dueToday.length} due today, ${mine.overdue.length} overdue` : "Nothing waiting for you"}
+          </TooltipContent>
         </Tooltip>
-      ) : null}
 
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <LinkButton
-              variant="ghost"
-              size="icon-sm"
-              aria-label="Guided demo"
-              href="/demo"
-              className="hidden sm:inline-flex"
-            >
-              <SparklesIcon />
-            </LinkButton>
-          }
-        />
-        <TooltipContent>Guided demo</TooltipContent>
-      </Tooltip>
+        <QuickActions />
+      </div>
 
-      <RoleSwitcher />
-      <QuickActions />
+      <LinkButton variant="ghost" size="icon-lg" aria-label="Your account" href="/account" className="rounded-full">
+        <CircleUserIcon className="size-5" />
+      </LinkButton>
     </header>
   );
 }

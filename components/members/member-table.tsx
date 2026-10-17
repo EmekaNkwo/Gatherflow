@@ -3,7 +3,6 @@
 import { useMemo } from "react";
 import Link from "next/link";
 import { MoreHorizontalIcon } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -15,6 +14,7 @@ import { DataTable, TextCell, type GatherFlowColumn } from "@/components/shared/
 import { MembershipStatusBadge } from "@/components/shared/badges";
 import { PersonCell } from "@/components/shared/person-cell";
 import { formatShortDate } from "@/lib/dates";
+import { displayName } from "@/lib/strings";
 import type { MemberRow } from "@/services/members/selectors";
 
 interface MemberTableProps {
@@ -26,7 +26,7 @@ interface MemberTableProps {
   onAddToGroup: (row: MemberRow) => void;
 }
 
-/** The member directory table. */
+/** The member directory as a table: the wide-screen view for staff work. */
 export function MemberTable({
   rows,
   toolbar,
@@ -57,7 +57,9 @@ export function MemberTable({
           <div className="flex flex-wrap items-center gap-1.5">
             <MembershipStatusBadge status={row.original.status} />
             {row.original.person.member?.requestedContact ? (
-              <Badge variant="secondary">Asked for contact</Badge>
+              <span className="rounded-full bg-primary/12 px-2.5 py-0.5 text-xs font-medium text-primary dark:text-foreground">
+                Asked for contact
+              </span>
             ) : null}
           </div>
         ),
@@ -84,7 +86,7 @@ export function MemberTable({
           <div className="space-y-0.5">
             <TextCell value={formatShortDate(row.original.lastAttendance)} />
             {row.original.reviewReason ? (
-              <p className="max-w-64 text-xs text-amber-600 dark:text-amber-500">
+              <p className="max-w-64 text-xs whitespace-normal text-primary dark:text-foreground">
                 {row.original.reviewReason}
               </p>
             ) : null}
@@ -109,14 +111,19 @@ export function MemberTable({
       },
       {
         id: "actions",
-        header: "Actions",
+        header: () => <span className="sr-only">Actions</span>,
         enableSorting: false,
         enableHiding: false,
         cell: ({ row }) => (
           <DropdownMenu>
             <DropdownMenuTrigger
               render={
-                <Button variant="ghost" size="icon-sm" aria-label="Member actions">
+                <Button
+                  variant="ghost"
+                  size="icon-lg"
+                  className="rounded-full"
+                  aria-label={`Actions for ${displayName(row.original.person)}`}
+                >
                   <MoreHorizontalIcon />
                 </Button>
               }

@@ -1,8 +1,6 @@
 "use client";
 
 import { useCallback, useMemo } from "react";
-import { toast } from "sonner";
-import { downloadJson } from "@/lib/csv";
 import type { PipelineStage } from "@/types/follow-up";
 import type {
   AutomationRuleConfig,
@@ -14,15 +12,11 @@ import type { DemoRole } from "@/types/team";
 import { useChurchStore } from "@/stores/church-store";
 import { useCommand, useSnapshot } from "./use-church-data";
 
-/** Church configuration, the automation rules and the demo data controls. */
+/** Church configuration, the automation rules and the team. */
 export function useChurchSettings() {
   const snapshot = useSnapshot();
   const { dispatch } = useCommand();
-  const reset = useChurchStore((state) => state.reset);
-  const exportBundle = useChurchStore((state) => state.exportBundle);
-  const importBundle = useChurchStore((state) => state.importBundle);
   const report = useChurchStore((state) => state.report);
-  const seeded = useChurchStore((state) => state.seeded);
 
   const rules = useMemo(() => snapshot.settings.automationRules, [snapshot.settings]);
   const stages = useMemo(
@@ -72,37 +66,6 @@ export function useChurchSettings() {
     [dispatch],
   );
 
-  const downloadBundle = useCallback(() => {
-    const bundle = exportBundle();
-    if (!bundle) {
-      toast.error("There is nothing to export yet.");
-      return;
-    }
-    downloadJson(`gatherflow-demo-data-${bundle.exportedAt.slice(0, 10)}.json`, bundle);
-    toast.success("Demo data exported.", {
-      description: "Pastoral-care records and emergency contacts were excluded.",
-    });
-  }, [exportBundle]);
-
-  const uploadBundle = useCallback(
-    async (file: File) => {
-      try {
-        const parsed = JSON.parse(await file.text()) as unknown;
-        const outcome = importBundle(parsed);
-        if (outcome.ok) toast.success(outcome.value);
-        else toast.error(outcome.error);
-      } catch {
-        toast.error("That file could not be read as JSON.");
-      }
-    },
-    [importBundle],
-  );
-
-  const resetDemoData = useCallback(() => {
-    reset();
-    toast.success("Demo data restored to the original seed.");
-  }, [reset]);
-
   return {
     settings: snapshot.settings,
     rules,
@@ -110,7 +73,6 @@ export function useChurchSettings() {
     services: snapshot.settings.services,
     team: snapshot.team,
     report,
-    seeded,
     saveProfile,
     saveRule,
     saveEngagement,
@@ -118,8 +80,5 @@ export function useChurchSettings() {
     saveServices,
     saveTeamMember,
     setMemberActive,
-    downloadBundle,
-    uploadBundle,
-    resetDemoData,
   };
 }

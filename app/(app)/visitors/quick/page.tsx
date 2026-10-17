@@ -1,26 +1,26 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { LinkButton } from "@/components/shared/link-button";
-import { Card, CardContent } from "@/components/ui/card";
+import Link from "next/link";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
-import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
+import { Field, FieldLabel } from "@/components/ui/field";
 import { PageHeader, PageShell } from "@/components/shared/page-header";
 import { RestrictedState } from "@/components/shared/empty-state";
 import { QuickRegisterForm } from "@/components/visitors/quick-register-form";
-import { toIsoDate } from "@/lib/dates";
-import { useDemoRole } from "@/hooks/useDemoRole";
+import { formatDisplayDate, toIsoDate } from "@/lib/dates";
+import { useRole } from "@/hooks/useRole";
 import { useNow } from "@/hooks/use-now";
 import { useSnapshot } from "@/hooks/use-church-data";
 
 /**
- * Quick registration mode for the welcome desk: pick the service once, then
- * work through the queue of visitors one after another.
+ * Welcoming somebody new, made for the welcome desk and a phone: the
+ * service is chosen once (most recent by default), then people are added one
+ * after another.
  */
 export default function QuickRegistrationPage() {
   const now = useNow();
   const snapshot = useSnapshot();
-  const { can } = useDemoRole();
+  const { can } = useRole();
 
   const sessions = useMemo(
     () =>
@@ -41,44 +41,55 @@ export default function QuickRegistrationPage() {
     );
   }
 
+  const chosen = sessions.find((session) => session.id === sessionId);
+
   return (
-    <PageShell>
+    <PageShell className="max-w-2xl">
       <PageHeader
-        title="Quick registration"
-        description="A short form for registering several visitors in a row. Each one gets a welcome follow-up task automatically."
-        actions={
-          <LinkButton variant="outline" size="sm" href="/visitors/new">
-            Switch to the full form
-          </LinkButton>
-        }
+        title="Welcome someone new"
+        description="A name is enough to start. We’ll make sure somebody says hello."
       />
 
-      <Card>
-        <CardContent className="space-y-6">
-          <Field className="max-w-sm">
-            <FieldLabel htmlFor="quick-session">Service being registered against</FieldLabel>
-            <NativeSelect
-              className="w-full"
-              id="quick-session"
-              value={sessionId}
-              onChange={(event) => setSessionId(event.target.value)}
-            >
-              <NativeSelectOption value="">Do not record attendance</NativeSelectOption>
-              {sessions.map((session) => (
-                <NativeSelectOption key={session.id} value={session.id}>
-                  {session.name} · {session.date}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-            <FieldDescription>
-              Everyone registered below is also checked in to this service, so visit counts come
-              from real attendance records.
-            </FieldDescription>
-          </Field>
+      <details className="group rounded-2xl bg-muted px-4 py-3">
+        <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between gap-3">
+          <span>
+            {chosen ? (
+              <>
+                Checking them in to <strong>{chosen.name}</strong>, {formatDisplayDate(chosen.date)}
+              </>
+            ) : (
+              "Not checking them in to a service"
+            )}
+          </span>
+          <span className="text-sm font-medium text-primary">Change</span>
+        </summary>
+        <Field className="mt-3 max-w-sm">
+          <FieldLabel htmlFor="quick-session">Service</FieldLabel>
+          <NativeSelect
+            className="w-full"
+            id="quick-session"
+            value={sessionId}
+            onChange={(event) => setSessionId(event.target.value)}
+          >
+            <NativeSelectOption value="">Don&apos;t check them in</NativeSelectOption>
+            {sessions.map((session) => (
+              <NativeSelectOption key={session.id} value={session.id}>
+                {session.name} · {formatDisplayDate(session.date)}
+              </NativeSelectOption>
+            ))}
+          </NativeSelect>
+        </Field>
+      </details>
 
-          <QuickRegisterForm sessionId={sessionId || undefined} />
-        </CardContent>
-      </Card>
+      <QuickRegisterForm sessionId={sessionId || undefined} />
+
+      <p className="text-sm text-muted-foreground">
+        Need to record more, like an address or household?{" "}
+        <Link href="/visitors/new" className="font-medium text-primary underline-offset-4 hover:underline">
+          Use the full form
+        </Link>
+        .
+      </p>
     </PageShell>
   );
 }

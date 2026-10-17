@@ -2,40 +2,38 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { ChevronDownIcon } from "lucide-react";
+import { cn } from "cn";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Field,
-  FieldDescription,
-  FieldGroup,
-  FieldLabel,
-} from "@/components/ui/field";
+import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { PageHeader, PageShell } from "@/components/shared/page-header";
 import { RestrictedState } from "@/components/shared/empty-state";
+import { ConsentChoice } from "@/components/people/responsive-dialog";
 import { DuplicateSuggestions } from "@/components/visitors/duplicate-suggestions";
 import { toIsoDate } from "@/lib/dates";
 import { CONTACT_METHODS, CONTACT_METHOD_LABELS, type ContactMethod } from "@/types/common";
-import { useDemoRole } from "@/hooks/useDemoRole";
+import { useRole } from "@/hooks/useRole";
 import { useMembers } from "@/hooks/useMembers";
 import { useNow } from "@/hooks/use-now";
 import { useSnapshot } from "@/hooks/use-church-data";
 import { useVisitors } from "@/hooks/useVisitors";
 
 /**
- * Registers a member directly.
+ * Adds a member directly: name, how to reach them and their consent first,
+ * the rest under "More details".
  *
- * Someone who already has a visitor record should be confirmed from that
- * record instead, so their history carries over — the duplicate suggestions
- * point that out before a second record is created.
+ * Someone who already has a visitor record should be made a member from that
+ * record instead, so their history carries over — the "Have we met them
+ * before?" suggestions point that out before a second record is created.
  */
 export default function NewMemberPage() {
   const router = useRouter();
   const now = useNow();
   const snapshot = useSnapshot();
-  const { can } = useDemoRole();
+  const { can } = useRole();
   const { register } = useMembers();
   const { findDuplicates } = useVisitors();
 
@@ -48,7 +46,9 @@ export default function NewMemberPage() {
   const [preferredService, setPreferredService] = useState("sunday_service");
   const [householdId, setHouseholdId] = useState("");
   const [preferredMethod, setPreferredMethod] = useState<ContactMethod>("phone");
-  const [permissionGranted, setPermissionGranted] = useState(true);
+  // Consent is asked of each person, never assumed: unticked until they say yes.
+  const [permissionGranted, setPermissionGranted] = useState(false);
+  const [more, setMore] = useState(false);
 
   if (!can("people.write")) {
     return (
@@ -59,9 +59,7 @@ export default function NewMemberPage() {
   }
 
   const duplicates =
-    firstName.trim().length > 1 || phone.length > 5
-      ? findDuplicates({ firstName, lastName, phone, email })
-      : [];
+    firstName.trim().length > 1 || phone.length > 5 ? findDuplicates({ firstName, lastName, phone, email }) : [];
 
   const submit = async () => {
     const outcome = await register({
@@ -80,104 +78,78 @@ export default function NewMemberPage() {
   };
 
   return (
-    <PageShell className="max-w-3xl">
+    <PageShell className="max-w-2xl">
       <PageHeader
         title="Add a member"
-        description="For someone joining directly. If they have visited before, open their visitor record and confirm membership there so their history carries over."
+        description="For someone joining directly. If they've visited before, make them a member from their visitor page so their story carries over."
       />
 
-      <Card>
-        <CardContent className="space-y-6">
-          <DuplicateSuggestions
-            matches={duplicates}
-            onUseExisting={(personId) => router.push(`/visitors/${personId}`)}
-          />
+      <form
+        className="space-y-6"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (firstName.trim() && lastName.trim()) void submit();
+        }}
+      >
+        <DuplicateSuggestions matches={duplicates} onUseExisting={(personId) => router.push(`/visitors/${personId}`)} />
 
-          <FieldGroup className="sm:grid sm:grid-cols-2 sm:gap-4">
-            <Field>
-              <FieldLabel htmlFor="member-first">First name</FieldLabel>
-              <Input
-                id="member-first"
-                value={firstName}
-                onChange={(event) => setFirstName(event.target.value)}
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="member-last">Last name</FieldLabel>
-              <Input
-                id="member-last"
-                value={lastName}
-                onChange={(event) => setLastName(event.target.value)}
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="member-preferred">Preferred name</FieldLabel>
-              <Input
-                id="member-preferred"
-                value={preferredName}
-                onChange={(event) => setPreferredName(event.target.value)}
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="member-phone">Phone</FieldLabel>
-              <Input
-                id="member-phone"
-                inputMode="tel"
-                value={phone}
-                onChange={(event) => setPhone(event.target.value)}
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="member-email">Email</FieldLabel>
-              <Input
-                id="member-email"
-                type="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="member-date">Membership date</FieldLabel>
-              <Input
-                id="member-date"
-                type="date"
-                value={membershipDate}
-                onChange={(event) => setMembershipDate(event.target.value)}
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="member-service">Preferred service</FieldLabel>
-              <NativeSelect
-                className="w-full"
-                id="member-service"
-                value={preferredService}
-                onChange={(event) => setPreferredService(event.target.value)}
-              >
-                {snapshot.settings.services.map((service) => (
-                  <NativeSelectOption key={service.id} value={service.type}>
-                    {service.name}
-                  </NativeSelectOption>
-                ))}
-              </NativeSelect>
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="member-household">Household</FieldLabel>
-              <NativeSelect
-                className="w-full"
-                id="member-household"
-                value={householdId}
-                onChange={(event) => setHouseholdId(event.target.value)}
-              >
-                <NativeSelectOption value="">No household</NativeSelectOption>
-                {snapshot.households.map((household) => (
-                  <NativeSelectOption key={household.id} value={household.id}>
-                    {household.name}
-                  </NativeSelectOption>
-                ))}
-              </NativeSelect>
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="member-method">Preferred contact</FieldLabel>
+        <FieldGroup className="gap-4 sm:grid sm:grid-cols-2">
+          <Field>
+            <FieldLabel htmlFor="member-first">First name</FieldLabel>
+            <Input
+              id="member-first"
+              className="h-12 text-base"
+              autoComplete="given-name"
+              value={firstName}
+              onChange={(event) => setFirstName(event.target.value)}
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="member-last">Last name</FieldLabel>
+            <Input
+              id="member-last"
+              className="h-12 text-base"
+              autoComplete="family-name"
+              value={lastName}
+              onChange={(event) => setLastName(event.target.value)}
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="member-phone">Phone number</FieldLabel>
+            <Input
+              id="member-phone"
+              className="h-12 text-base"
+              inputMode="tel"
+              autoComplete="tel"
+              value={phone}
+              onChange={(event) => setPhone(event.target.value)}
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="member-email">Email (optional)</FieldLabel>
+            <Input
+              id="member-email"
+              className="h-12 text-base"
+              type="email"
+              autoComplete="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+            />
+          </Field>
+        </FieldGroup>
+
+        <div className="space-y-4">
+          <ConsentChoice id="member-permission" title="Happy for us to get in touch" hint="Only tick this if they said yes.">
+            <Checkbox
+              id="member-permission"
+              className="size-5"
+              checked={permissionGranted}
+              onCheckedChange={(checked) => setPermissionGranted(checked === true)}
+            />
+          </ConsentChoice>
+          {permissionGranted ? (
+            <Field className="sm:max-w-xs">
+              <FieldLabel htmlFor="member-method">Best way to reach them</FieldLabel>
               <NativeSelect
                 className="w-full"
                 id="member-method"
@@ -191,35 +163,93 @@ export default function NewMemberPage() {
                 ))}
               </NativeSelect>
             </Field>
-          </FieldGroup>
+          ) : null}
+        </div>
 
-          <Field orientation="horizontal">
-            <Checkbox
-              id="member-permission"
-              checked={permissionGranted}
-              onCheckedChange={(checked) => setPermissionGranted(checked === true)}
-            />
-            <div>
-              <FieldLabel htmlFor="member-permission" className="font-normal">
-                Happy to be contacted by the church
-              </FieldLabel>
-              <FieldDescription>
-                Emergency contacts are added separately on the member&apos;s record and are
-                restricted.
-              </FieldDescription>
-            </div>
-          </Field>
+        <div>
+          <button
+            type="button"
+            aria-expanded={more}
+            onClick={() => setMore((open) => !open)}
+            className="flex min-h-11 items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
+          >
+            More details
+            <ChevronDownIcon className={cn("size-4 transition-transform", more && "rotate-180")} />
+          </button>
+          {more ? (
+            <FieldGroup className="mt-3 gap-4 sm:grid sm:grid-cols-2">
+              <Field>
+                <FieldLabel htmlFor="member-preferred">What they like to be called</FieldLabel>
+                <Input
+                  id="member-preferred"
+                  className="h-11"
+                  value={preferredName}
+                  onChange={(event) => setPreferredName(event.target.value)}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="member-date">Member since</FieldLabel>
+                <Input
+                  id="member-date"
+                  type="date"
+                  className="h-11"
+                  value={membershipDate}
+                  onChange={(event) => setMembershipDate(event.target.value)}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="member-service">Service they usually come to</FieldLabel>
+                <NativeSelect
+                  className="w-full"
+                  id="member-service"
+                  value={preferredService}
+                  onChange={(event) => setPreferredService(event.target.value)}
+                >
+                  {snapshot.settings.services.map((service) => (
+                    <NativeSelectOption key={service.id} value={service.type}>
+                      {service.name}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="member-household">Household</FieldLabel>
+                <NativeSelect
+                  className="w-full"
+                  id="member-household"
+                  value={householdId}
+                  onChange={(event) => setHouseholdId(event.target.value)}
+                >
+                  <NativeSelectOption value="">No household</NativeSelectOption>
+                  {snapshot.households.map((household) => (
+                    <NativeSelectOption key={household.id} value={household.id}>
+                      {household.name}
+                    </NativeSelectOption>
+                  ))}
+                </NativeSelect>
+              </Field>
+              <p className="text-sm text-muted-foreground sm:col-span-2">
+                Emergency contacts are kept separately on their record, and only people allowed to see pastoral care
+                can see them.
+              </p>
+            </FieldGroup>
+          ) : null}
+        </div>
 
-          <div className="flex flex-wrap gap-2">
-            <Button onClick={() => void submit()} disabled={!firstName.trim() || !lastName.trim()}>
-              Register member
-            </Button>
-            <Button variant="outline" onClick={() => router.back()}>
-              Cancel
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="submit"
+            size="lg"
+            className="h-12 flex-1 rounded-full text-base sm:flex-none sm:px-8"
+            disabled={!firstName.trim() || !lastName.trim()}
+          >
+            Add {firstName.trim() || "member"}
+          </Button>
+          <Button type="button" variant="ghost" size="lg" className="rounded-full" onClick={() => router.back()}>
+            Cancel
+          </Button>
+        </div>
+      </form>
     </PageShell>
   );
 }

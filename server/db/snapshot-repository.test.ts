@@ -271,28 +271,21 @@ describe.skipIf(!CONNECTION)("postgres snapshot repository", () => {
     expect(restored.version).toBe(1);
   });
 
-  it("leaves pastoral care and emergency contacts out of an export", async () => {
-    const churchId = nextChurchId();
-    const repository = repositoryFor(churchId);
-    const loaded = await repository.load();
-    expect(loaded.snapshot.careRecords.length).toBeGreaterThan(0);
-
-    const bundle = repository.exportBundle(loaded.snapshot);
-    expect("careRecords" in bundle.data).toBe(false);
-    expect(
-      bundle.data.people.some((person) => person.member?.emergencyContact !== undefined),
-    ).toBe(false);
-  });
-
-  it("never carries pastoral care back in through an import", async () => {
+  it("treats a church with no people as a new church, never as a reason to reseed", async () => {
     const churchId = nextChurchId();
     const repository = repositoryFor(churchId);
     const loaded = await repository.load();
 
-    const bundle = repository.exportBundle(loaded.snapshot);
-    const imported = repository.importBundle(bundle, loaded.snapshot);
+    const emptied: ChurchSnapshot = { ...loaded.snapshot, people: [], households: [], tasks: [], attendance: [] };
+    await repository.save(loaded.snapshot, emptied, loaded.version);
 
-    expect(imported.ok).toBe(true);
-    if (imported.ok) expect(imported.value.careRecords).toEqual([]);
+    const again = await repositoryFor(churchId).load();
+    expect(again.seeded).toBe(false);
+    expect(again.snapshot.people).toEqual([]);
+    // Everything else the church still has is still there (loads order by id).
+    const byId = (members: readonly { id: string }[]) => [...members].sort((a, b) => a.id.localeCompare(b.id));
+    expect(byId(again.snapshot.team)).toEqual(byId(loaded.snapshot.team));
+    expect(again.snapshot.templates.length).toBe(loaded.snapshot.templates.length);
   });
+
 });

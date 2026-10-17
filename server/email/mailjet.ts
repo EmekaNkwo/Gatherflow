@@ -1,4 +1,5 @@
 import { err, ok, type Result } from "@/lib/result";
+import type { EmailAvailability } from "@/types/email";
 
 /**
  * Mailjet Send API v3.1.
@@ -10,6 +11,8 @@ import { err, ok, type Result } from "@/lib/result";
  *
  * The transport is injected so tests exercise this code without a network, and
  * so a send can be driven from a fixture rather than from the real account.
+ * The URL is configurable for the same reason: the remote end-to-end suite
+ * points it at a stub that records what would have been sent.
  */
 
 export const MAILJET_SEND_URL = "https://api.mailjet.com/v3.1/send";
@@ -19,6 +22,8 @@ export interface MailjetCredentials {
   secretKey: string;
   fromEmail: string;
   fromName: string;
+  /** Defaults to the real API. Overridden only to send to a stub. */
+  sendUrl?: string;
 }
 
 export interface OutgoingEmail {
@@ -28,8 +33,12 @@ export interface OutgoingEmail {
   textPart: string;
   /** Echoed back on every webhook event for this message. */
   customId: string;
-  /** Where a recipient goes to stop hearing from this church. */
-  unsubscribeUrl: string;
+  /**
+   * Where a recipient goes to stop hearing from this church. Absent for
+   * transactional mail the person asked for (a password reset), which
+   * carries no unsubscribe because there is nothing to unsubscribe from.
+   */
+  unsubscribeUrl?: string;
 }
 
 export interface SendAccepted {
@@ -66,6 +75,7 @@ export function createMailjetClient(
   const authorization = `Basic ${Buffer.from(
     `${credentials.apiKey}:${credentials.secretKey}`,
   ).toString("base64")}`;
+  const sendUrl = credentials.sendUrl ?? MAILJET_SEND_URL;
 
   return {
     async send(email) {
@@ -78,19 +88,23 @@ export function createMailjetClient(
             TextPart: email.textPart,
             HTMLPart: email.htmlPart,
             CustomID: email.customId,
-            Headers: {
-              // Required for bulk mail, and the honest counterpart to the
-              // opt-in consent the church recorded in the first place.
-              "List-Unsubscribe": `<${email.unsubscribeUrl}>`,
-              "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
-            },
+            ...(email.unsubscribeUrl
+              ? {
+                  Headers: {
+                    // Required for bulk mail, and the honest counterpart to
+                    // the opt-in consent the church recorded in the first place.
+                    "List-Unsubscribe": `<${email.unsubscribeUrl}>`,
+                    "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+                  },
+                }
+              : {}),
           },
         ],
       };
 
       let response: { status: number; json: () => Promise<unknown> };
       try {
-        response = await transport(MAILJET_SEND_URL, {
+        response = await transport(sendUrl, {
           method: "POST",
           headers: {
             "content-type": "application/json",
@@ -162,7 +176,25 @@ export interface MailjetConfig extends MailjetCredentials {
   webhookSecret: string;
   /** Base URL used to build the unsubscribe link. */
   appUrl: string;
+  /** False when `appUrl` is the development default rather than a set value. */
+  appUrlConfigured: boolean;
+  /** Signs unsubscribe links so a guessed person id cannot opt somebody out. */
+  unsubscribeSecret: string;
+  /**
+   * The production gate. Credentials make sending *possible*; this makes it
+   * *offered*. It stays off until the hardening checklist has passed, so a
+   * configured-but-unverified deployment still behaves as the demo does.
+   */
+  sendingEnabled: boolean;
+  /**
+   * Addresses a controlled pilot may write to. Empty means no restriction.
+   * While set, a send to any other address is refused before it is queued.
+   */
+  pilotAllowlist: readonly string[];
 }
+
+export const NOT_CONFIGURED = "not_configured";
+export const NOT_ENABLED = "not_enabled";
 
 /**
  * Reads the configuration, or explains exactly what is missing.
@@ -185,7 +217,25 @@ export function readMailjetConfig(
     if (!value) missing.push(key);
   }
   if (missing.length) {
-    return err(`Email is not configured. Missing: ${missing.join(", ")}.`, "not_configured");
+    return err(`Email is not configured. Missing: ${missing.join(", ")}.`, NOT_CONFIGURED);
+  }
+
+  // Set but empty is a mistake, not "no pilot": fail closed rather than
+  // quietly lifting a restriction the operator believes is in force.
+  const pilotAllowlist = parseAllowlist(env.EMAIL_PILOT_ALLOWLIST);
+  if (env.EMAIL_PILOT_ALLOWLIST !== undefined && env.EMAIL_PILOT_ALLOWLIST.trim() !== "" && pilotAllowlist.length === 0) {
+    return err(
+      "Email is not configured. EMAIL_PILOT_ALLOWLIST is set but contains no addresses.",
+      NOT_CONFIGURED,
+    );
+  }
+
+  const unsubscribeSecret = env.UNSUBSCRIBE_SECRET ?? env.BETTER_AUTH_SECRET;
+  if (!unsubscribeSecret) {
+    return err(
+      "Email is not configured. Missing: UNSUBSCRIBE_SECRET (or BETTER_AUTH_SECRET).",
+      NOT_CONFIGURED,
+    );
   }
 
   return ok({
@@ -193,7 +243,72 @@ export function readMailjetConfig(
     secretKey: required.secretKey as string,
     fromEmail: required.fromEmail as string,
     fromName: env.MAILJET_FROM_NAME ?? "GatherFlow",
+    sendUrl: env.MAILJET_SEND_URL || undefined,
     webhookSecret: required.webhookSecret as string,
     appUrl: env.BETTER_AUTH_URL ?? "http://localhost:3000",
+    appUrlConfigured: Boolean(env.BETTER_AUTH_URL),
+    unsubscribeSecret,
+    sendingEnabled: isTruthy(env.EMAIL_SENDING_ENABLED),
+    pilotAllowlist,
   });
+}
+
+export type { EmailAvailability };
+
+/**
+ * Reasons here are deliberately generic: this goes to every signed-in
+ * browser, and the names of missing variables belong in the server's own
+ * configuration refusal, not in a response.
+ */
+export function emailAvailability(env: NodeJS.ProcessEnv = process.env): EmailAvailability {
+  const config = readMailjetConfig(env);
+  if (!config.ok) {
+    return {
+      configured: false,
+      enabled: false,
+      pilot: false,
+      reason: "Email is not configured for this deployment.",
+    };
+  }
+  const gate = assertSendingEnabled(config.value);
+  if (!gate.ok) {
+    return {
+      configured: true,
+      enabled: false,
+      pilot: false,
+      reason: "Email is configured but sending is not switched on for this deployment.",
+    };
+  }
+  return { configured: true, enabled: true, pilot: config.value.pilotAllowlist.length > 0 };
+}
+
+/** The gate, as a refusal the send endpoint returns. */
+export function assertSendingEnabled(config: MailjetConfig): Result<MailjetConfig> {
+  if (!config.sendingEnabled) {
+    return err(
+      "Email sending is not switched on for this deployment. Draft, copy or open the message in another app instead.",
+      NOT_ENABLED,
+    );
+  }
+  // Every message carries an unsubscribe link built from this origin. Sending
+  // with the development default would put localhost links in people's inboxes.
+  if (!config.appUrlConfigured) {
+    return err(
+      "Email sending is switched on but BETTER_AUTH_URL is not set, so unsubscribe links would be wrong. Nothing was sent.",
+      NOT_ENABLED,
+    );
+  }
+  return ok(config);
+}
+
+function isTruthy(value: string | undefined): boolean {
+  return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
+}
+
+function parseAllowlist(value: string | undefined): string[] {
+  if (!value) return [];
+  return value
+    .split(/[,\s]+/)
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean);
 }

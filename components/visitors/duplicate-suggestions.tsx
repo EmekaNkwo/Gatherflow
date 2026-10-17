@@ -2,8 +2,7 @@
 
 import Link from "next/link";
 import { UsersIcon } from "lucide-react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
+import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { formatDisplayDate } from "@/lib/dates";
 import { displayName } from "@/lib/strings";
@@ -16,68 +15,74 @@ interface DuplicateSuggestionsProps {
   onUseExisting?: (personId: string) => void;
 }
 
+const CONFIDENCE: Record<DuplicateMatch["confidence"], string> = {
+  high: "Probably them",
+  medium: "Might be them",
+  low: "Worth a look",
+};
+
 /**
- * Suggests existing records rather than blocking registration — two people
+ * Suggests people already on record rather than blocking — two people
  * really can share a name, so the volunteer decides.
  */
 export function DuplicateSuggestions({ matches, onUseExisting }: DuplicateSuggestionsProps) {
   if (!matches.length) return null;
 
   return (
-    <Alert>
-      <UsersIcon />
-      <AlertTitle>
-        {matches.length === 1
-          ? "This might already be in the directory"
-          : `${matches.length} records look similar`}
-      </AlertTitle>
-      <AlertDescription>
-        <p>
-          Have a look before saving. If it is the same person, record the visit against their
-          existing record instead of creating a second one.
-        </p>
-        <ul className="mt-2 w-full space-y-2">
-          {matches.map((match) => (
-            <li
-              key={match.person.id}
-              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-background p-2"
-            >
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <Link href={personHref(match.person)} className="font-medium hover:underline">
-                    {displayName(match.person)}
-                  </Link>
-                  <Badge variant={match.confidence === "high" ? "default" : "secondary"}>
-                    {match.confidence === "high"
-                      ? "Likely the same person"
-                      : match.confidence === "medium"
-                        ? "Possibly the same person"
-                        : "Worth a look"}
-                  </Badge>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {match.reason}
-                  {match.person.visitor
-                    ? ` · first visit ${formatDisplayDate(match.person.visitor.firstVisitDate)}`
-                    : match.person.member
-                      ? ` · member ${match.person.member.reference}`
-                      : ""}
-                </p>
-              </div>
-              {onUseExisting ? (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => onUseExisting(match.person.id)}
+    <section aria-label="People who might already be here" className="space-y-3 rounded-3xl bg-accent p-5">
+      <div className="flex items-start gap-3">
+        <UsersIcon className="mt-0.5 size-5 shrink-0 text-primary" />
+        <div>
+          <p className="font-medium">
+            {matches.length === 1 ? "Have we met them before?" : "Have we met them before? A few people look similar."}
+          </p>
+          <p className="text-sm text-muted-foreground">
+            If it&apos;s the same person, use their record so their story stays in one place.
+          </p>
+        </div>
+      </div>
+      <ul className="divide-y overflow-hidden rounded-2xl border bg-card">
+        {matches.map((match) => (
+          <li key={match.person.id} className="flex min-h-14 flex-wrap items-center gap-3 px-4 py-3">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <Link href={personHref(match.person)} className="font-medium hover:underline">
+                  {displayName(match.person)}
+                </Link>
+                <span
+                  className={cn(
+                    "rounded-full px-2.5 py-0.5 text-xs font-medium",
+                    match.confidence === "high"
+                      ? "bg-primary/12 text-primary dark:text-foreground"
+                      : "bg-muted text-muted-foreground",
+                  )}
                 >
-                  Use this record
-                </Button>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      </AlertDescription>
-    </Alert>
+                  {CONFIDENCE[match.confidence]}
+                </span>
+              </div>
+              <p className="text-sm text-muted-foreground">
+                {match.reason}
+                {match.person.visitor
+                  ? ` · first came ${formatDisplayDate(match.person.visitor.firstVisitDate)}`
+                  : match.person.member
+                    ? " · a member"
+                    : ""}
+              </p>
+            </div>
+            {onUseExisting ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="lg"
+                className="rounded-full"
+                onClick={() => onUseExisting(match.person.id)}
+              >
+                That&apos;s them
+              </Button>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }

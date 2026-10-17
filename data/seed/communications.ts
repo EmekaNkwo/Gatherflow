@@ -21,10 +21,10 @@ export function createCommunications(
   const welcomeTemplate = templates.find((template) => template.category === "visitor_welcome");
   const byId = new Map(people.map((person) => [person.id, person]));
   const statuses: CommunicationLogEntry["status"][] = [
-    "simulated_sent",
+    "opened_external",
     "copied",
     "opened_external",
-    "simulated_sent",
+    "copied",
   ];
 
   return tasks

@@ -1,8 +1,8 @@
 import type { IsoDateTime, PersonId, TeamMemberId } from "./common";
 
 /**
- * Demo roles. These drive UI affordances only — the README states plainly
- * that real access control must be enforced by a backend.
+ * Roles. Each account holds one per church, read from its membership row on
+ * every request and enforced on the server; the interface only reflects it.
  */
 export type DemoRole =
   | "administrator"

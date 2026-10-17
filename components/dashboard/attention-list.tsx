@@ -7,7 +7,7 @@ import type { AttentionItem } from "@/services/analytics/dashboard";
 
 const TONE: Record<AttentionItem["tone"], { icon: typeof InfoIcon; className: string }> = {
   critical: { icon: AlertCircleIcon, className: "text-destructive" },
-  warning: { icon: AlertCircleIcon, className: "text-amber-600 dark:text-amber-500" },
+  warning: { icon: AlertCircleIcon, className: "text-primary" },
   default: { icon: InfoIcon, className: "text-muted-foreground" },
 };
 
@@ -20,29 +20,29 @@ const TONE: Record<AttentionItem["tone"], { icon: typeof InfoIcon; className: st
 export function AttentionList({ items }: { items: readonly AttentionItem[] }) {
   if (!items.length) {
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-        <CheckCircle2Icon className="size-4 text-emerald-600 dark:text-emerald-500" />
+      <div className="flex items-center gap-2 rounded-2xl bg-muted px-5 py-4 text-muted-foreground">
+        <CheckCircle2Icon className="size-5 text-done" />
         Nothing needs attention right now.
       </div>
     );
   }
 
   return (
-    <ul className="divide-y rounded-xl border">
+    <ul className="divide-y overflow-hidden rounded-3xl border bg-card">
       {items.map((item) => {
         const tone = TONE[item.tone];
         return (
           <li key={item.id}>
             <Link
               href={item.href}
-              className="flex items-start gap-3 p-3 outline-none hover:bg-muted/50 focus-visible:ring-3 focus-visible:ring-ring/50"
+              className="flex min-h-16 items-center gap-3 px-5 py-3 outline-none hover:bg-muted/50 focus-visible:ring-3 focus-visible:ring-ring/50"
             >
-              <tone.icon className={cn("mt-0.5 size-4 shrink-0", tone.className)} />
+              <tone.icon className={cn("size-5 shrink-0", tone.className)} />
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium">{item.title}</p>
-                <p className="text-xs text-muted-foreground">{item.detail}</p>
+                <p className="font-medium">{item.title}</p>
+                <p className="text-sm text-muted-foreground">{item.detail}</p>
               </div>
-              <ChevronRightIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+              <ChevronRightIcon className="size-5 shrink-0 text-muted-foreground" />
             </Link>
           </li>
         );

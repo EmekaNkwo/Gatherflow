@@ -16,8 +16,9 @@ import type { ChurchSnapshot } from "@/types/snapshot";
  * Every figure is counted from the stored attendance rows. Nothing is
  * cached or pre-aggregated, so the numbers cannot drift from the records.
  *
- * People are classified by what they are now (member or visitor): the demo
- * does not model historical membership state, and the reports say so.
+ * People are classified by what they were on the day of the session: a
+ * member counts as a member from their membership date, and as a visitor
+ * at anything they attended before it.
  */
 
 export interface SessionSummary {
@@ -26,6 +27,11 @@ export interface SessionSummary {
   members: number;
   visitors: number;
   firstTimeVisitors: number;
+}
+
+/** Whether a person was a member on a given day. */
+export function wasMemberOn(person: Person | undefined, date: IsoDate): boolean {
+  return person?.kind === "member" && person.member !== undefined && person.member.membershipDate <= date;
 }
 
 function presentRows(snapshot: ChurchSnapshot): AttendanceRecord[] {
@@ -54,8 +60,7 @@ function summarise(snapshot: ChurchSnapshot, session: AttendanceSession): Sessio
   let members = 0;
   let visitors = 0;
   for (const row of rows) {
-    const person = peopleById.get(row.personId);
-    if (person?.kind === "member") members += 1;
+    if (wasMemberOn(peopleById.get(row.personId), session.date)) members += 1;
     else visitors += 1;
   }
 
@@ -98,12 +103,12 @@ export function attendanceTrend(
     const bucket = buckets.get(weekStart(session.date));
     if (!bucket) continue;
 
-    const person = peopleById.get(row.personId);
+    const member = wasMemberOn(peopleById.get(row.personId), session.date);
     buckets.set(bucket.weekStart, {
       ...bucket,
       total: bucket.total + 1,
-      members: bucket.members + (person?.kind === "member" ? 1 : 0),
-      visitors: bucket.visitors + (person?.kind === "member" ? 0 : 1),
+      members: bucket.members + (member ? 1 : 0),
+      visitors: bucket.visitors + (member ? 0 : 1),
       firstTimeVisitors: bucket.firstTimeVisitors + (row.firstVisit ? 1 : 0),
     });
   }

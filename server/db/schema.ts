@@ -381,6 +381,138 @@ export const webhookEvents = pgTable(
   (t) => [index("webhook_events_outbox_idx").on(t.outboxId)],
 );
 
+/**
+ * Every webhook delivery, as received, before anything is done with it.
+ *
+ * `webhook_events` records what was *applied* and makes a replay a no-op; this
+ * records what *arrived*, including deliveries that could not be parsed or
+ * whose processing failed part-way. It is the audit trail an operator reads
+ * when a bounce seems to have gone missing, and what a repair script replays
+ * from. Rows are pruned after a retention window; the applied-events table is
+ * what idempotency depends on, not this.
+ */
+export const webhookInbox = pgTable(
+  "webhook_inbox",
+  {
+    id: text("id").primaryKey(),
+    provider: text("provider").notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+    /** The body exactly as delivered. */
+    body: jsonb("body").notNull(),
+    events: integer("events").notNull().default(0),
+    applied: integer("applied").notNull().default(0),
+    ignored: integer("ignored").notNull().default(0),
+    duplicates: integer("duplicates").notNull().default(0),
+    optedOut: integer("opted_out").notNull().default(0),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+    /** Set when processing threw. The delivery is kept so it can be replayed. */
+    error: text("error"),
+  },
+  (t) => [index("webhook_inbox_received_idx").on(t.receivedAt)],
+);
+
+/**
+ * Who did what, as the server saw it.
+ *
+ * The snapshot's `activity` collection is the church's own timeline and can
+ * be edited, exported and restored with the rest of the data. This table is
+ * different: it is written by the server for every request that changes or
+ * tries to change something, it names the *account* as well as the team
+ * member it acted as, it records refusals, and nothing in the application
+ * can remove a row. It is what answers "who opted this person out" or "who
+ * tried to read care records" after the fact.
+ *
+ * Deliberately sparse: an action name, the id it targeted, an outcome. No
+ * bodies, no addresses, no notes.
+ */
+export const auditLog = pgTable(
+  "audit_log",
+  {
+    id: text("id").primaryKey(),
+    churchId: churchId(),
+    /** The signed-in account, or `system` for a provider-driven change. */
+    userId: text("user_id").notNull(),
+    /** The team member acted as, when linked. */
+    actorId: text("actor_id"),
+    /** A command name (`task.complete`), or a server action (`email.send`). */
+    action: text("action").notNull(),
+    /** The record the action was about, when there is one. */
+    targetId: text("target_id"),
+    /** ok | refused | failed */
+    outcome: text("outcome").notNull(),
+    /** The refusal code, when refused. */
+    code: text("code"),
+    at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("audit_log_church_at_idx").on(t.churchId, t.at)],
+);
+
+/**
+ * Invitations to join a church's team.
+ *
+ * The token itself is never stored, only its hash: the row proves an
+ * invitation exists, the link proves the person holding it was sent one.
+ * An invitation names the role it grants and, optionally, the existing team
+ * member it attaches the account to; otherwise accepting creates one.
+ */
+export const invitations = pgTable(
+  "invitations",
+  {
+    /** sha256 of the token in the link. */
+    id: text("id").primaryKey(),
+    churchId: churchId(),
+    email: text("email").notNull(),
+    role: text("role").$type<DemoRole>().notNull(),
+    teamMemberId: text("team_member_id"),
+    invitedBy: text("invited_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    acceptedBy: text("accepted_by"),
+  },
+  (t) => [index("invitations_church_idx").on(t.churchId), index("invitations_email_idx").on(t.email)],
+);
+
+/**
+ * Request budgets: how many requests a key (an address and an endpoint) has
+ * spent in its current window.
+ *
+ * Kept here rather than in each instance's memory so the budget is global:
+ * on a host that runs several instances, a script cannot multiply its
+ * allowance by being load-balanced. A fixed window per key — when it has
+ * passed, the next request starts a new one. Old rows are pruned by the cron.
+ */
+export const requestBudgets = pgTable("request_budgets", {
+  key: text("key").primaryKey(),
+  windowStart: timestamp("window_start", { withTimezone: true }).notNull().defaultNow(),
+  count: integer("count").notNull().default(1),
+});
+
+/**
+ * Browsers that asked for reminders.
+ *
+ * A subscription belongs to an account, not a church: the daily reminder adds
+ * up the account's work across every church it belongs to. The id is a hash
+ * of the push endpoint, so subscribing the same browser twice is one row.
+ * `last_sent_on` is the day the reminder was last claimed for, which is what
+ * keeps a second run on the same day from sending it again.
+ */
+export const pushSubscriptions = pgTable(
+  "push_subscriptions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    endpoint: text("endpoint").notNull(),
+    p256dh: text("p256dh").notNull(),
+    auth: text("auth").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastSentOn: text("last_sent_on"),
+  },
+  (t) => [index("push_subscriptions_user_idx").on(t.userId)],
+);
+
 /** Collection tables, keyed by the snapshot property they persist. */
 export const collectionTables = {
   people,

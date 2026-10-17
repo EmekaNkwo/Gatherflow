@@ -11,7 +11,7 @@ import { useSnapshot } from "./use-church-data";
 /**
  * One person's journey and timeline.
  *
- * The timeline is filtered by the active demo role: restricted entries
+ * The timeline is filtered by the signed-in role: restricted entries
  * (pastoral care) are only included for roles authorised to see them.
  */
 export function useMemberJourney(personId: PersonId) {
