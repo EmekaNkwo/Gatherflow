@@ -3,38 +3,38 @@
 import { useCallback, useMemo } from "react";
 import { toast } from "sonner";
 import type { ContactMethod, PersonId, TaskId, TemplateId } from "@/types/common";
-import type { CommunicationStatus } from "@/types/communication";
+import type { ManualCommunicationStatus } from "@/types/communication";
 import type { Result } from "@/lib/result";
 import {
+  buildExternalLink,
   communicationsForPerson,
   draftMessage,
   type DraftMessageInput,
   type MessageDraft,
 } from "@/services/communications/messaging";
-import { logCommunication } from "@/services/communications/messaging";
-import {
-  createTemplate,
-  deleteTemplate,
-  updateTemplate,
-  type TemplateInput,
-} from "@/services/communications/templates";
+import { type TemplateInput } from "@/services/communications/templates";
 import { createCommandContext } from "@/services/core/context";
+import { useChurchStore } from "@/stores/church-store";
 import { useSessionStore } from "@/stores/session-store";
+import type { SendEmailRequest } from "@/types/email";
 import { useCommand, useSnapshot } from "./use-church-data";
 import { useNow } from "./use-now";
 
 /**
- * Message drafting and the communication log.
+ * Message drafting, real email, and the communication log.
  *
- * Nothing here sends anything. Messages are drafted, copied or handed to an
- * app the user already has, and the log records exactly which of those
- * happened — it never claims delivery.
+ * Drafts are copied or handed to an app the user already has, and the log
+ * records exactly which of those happened. Real email exists only in the
+ * server-backed mode, and only when the deployment has switched it on; the
+ * log then records what the provider actually reported, never more.
  */
 export function useCommunications() {
   const snapshot = useSnapshot();
   const now = useNow();
-  const { run } = useCommand();
+  const { dispatch } = useCommand();
   const teamMemberId = useSessionStore((state) => state.teamMemberId);
+  const email = useChurchStore((state) => state.email);
+  const sendEmailCommand = useChurchStore((state) => state.sendEmail);
 
   const templates = useMemo(
     () => [...snapshot.templates].sort((left, right) => left.name.localeCompare(right.name)),
@@ -60,7 +60,7 @@ export function useCommunications() {
    */
   const prepare = useCallback(
     (input: DraftMessageInput): Result<MessageDraft> =>
-      draftMessage(snapshot, input, createCommandContext({ actorId: teamMemberId, now })),
+      draftMessage(snapshot, input, createCommandContext({ actorId: teamMemberId ?? "", now })),
     [snapshot, teamMemberId, now],
   );
 
@@ -68,92 +68,131 @@ export function useCommunications() {
     (input: {
       personId: PersonId;
       channel: ContactMethod;
-      status: CommunicationStatus;
+      status: ManualCommunicationStatus;
       body: string;
       templateId?: TemplateId;
       taskId?: TaskId;
-    }) => run((snap, ctx) => logCommunication(snap, input, ctx)),
-    [run],
+    }) => dispatch("communication.log", input),
+    [dispatch],
   );
 
-  /** Copies the message and records that it was copied. */
+  /**
+   * The link for the words as they stand now. Built when it is needed, never
+   * stored, so an edit in the composer is exactly what the app receives.
+   */
+  const linkFor = useCallback(
+    (draft: MessageDraft, body: string): string | undefined => {
+      const person = snapshot.people.find((entry) => entry.id === draft.personId);
+      if (!person) return undefined;
+      return buildExternalLink(
+        draft.channel,
+        person.phone,
+        person.email,
+        body,
+        snapshot.settings.defaultCountryCallingCode,
+      );
+    },
+    [snapshot],
+  );
+
+  /**
+   * Records the hand-over first and only then copies or opens. The server is
+   * the one that knows whether the person has since opted out, so nothing
+   * leaves the app until it has agreed. Its refusal is shown as a toast.
+   */
+  const recordFirst = useCallback(
+    async (draft: MessageDraft, body: string, status: ManualCommunicationStatus, taskId?: TaskId) => {
+      const outcome = await dispatch(
+        "communication.log",
+        { personId: draft.personId, channel: draft.channel, status, body, templateId: draft.templateId, taskId },
+        { silent: true },
+      );
+      return outcome.ok;
+    },
+    [dispatch],
+  );
+
+  /** Copies the final text once the server has accepted the record. */
   const copyAndLog = useCallback(
-    async (draft: MessageDraft, taskId?: TaskId) => {
+    async (draft: MessageDraft, body: string, taskId?: TaskId): Promise<boolean> => {
+      if (!(await recordFirst(draft, body, "copied", taskId))) return false;
       try {
-        await navigator.clipboard.writeText(draft.body);
+        await navigator.clipboard.writeText(body);
       } catch {
-        toast.error("Could not reach the clipboard. Select the text and copy it manually.");
-        return;
+        toast.error("Could not reach the clipboard. Select the text and copy it yourself.");
+        return false;
       }
-      log({
-        personId: draft.personId,
-        channel: draft.channel,
-        status: "copied",
-        body: draft.body,
-        templateId: draft.templateId,
-        taskId,
-      });
+      toast.success("Copied");
+      return true;
     },
-    [log],
+    [recordFirst],
   );
 
-  /** Opens the user's own messaging app, then records that it was opened. */
+  /** Opens the person's own messaging app once the server has accepted the record. */
   const openExternally = useCallback(
-    (draft: MessageDraft, taskId?: TaskId) => {
-      if (!draft.externalLink) {
-        toast.error("There is no contact detail for that channel.");
-        return;
+    async (draft: MessageDraft, body: string, taskId?: TaskId): Promise<boolean> => {
+      const link = linkFor(draft, body);
+      if (!link) {
+        toast.error("There's no usable contact detail for that way of sending.");
+        return false;
       }
-      window.open(draft.externalLink, "_blank", "noopener,noreferrer");
-      log({
-        personId: draft.personId,
-        channel: draft.channel,
-        status: "opened_external",
-        body: draft.body,
-        templateId: draft.templateId,
-        taskId,
-      });
+      if (!(await recordFirst(draft, body, "opened_external", taskId))) return false;
+      // Web links open beside the app; mailto, sms and tel hand over in place,
+      // which no popup blocker stops.
+      if (link.startsWith("https://")) window.open(link, "_blank", "noopener,noreferrer");
+      else window.location.assign(link);
+      toast.success("Opened in your messaging app");
+      return true;
     },
-    [log],
+    [linkFor, recordFirst],
   );
 
-  const simulateSend = useCallback(
-    (draft: MessageDraft, taskId?: TaskId) =>
-      log({
-        personId: draft.personId,
-        channel: draft.channel,
-        status: "simulated_sent",
-        body: draft.body,
-        templateId: draft.templateId,
-        taskId,
-      }),
-    [log],
+  /**
+   * Queues a real email through the server. The toast says "queued", not
+   * "sent": the worker sends it afterwards and the record's status follows
+   * what the provider reports.
+   */
+  const sendEmail = useCallback(
+    async (input: SendEmailRequest) => {
+      const outcome = await sendEmailCommand(input);
+      if (!outcome.ok) {
+        toast.error(outcome.error);
+        return outcome;
+      }
+      toast.success("Email queued", {
+        description: `It will be sent to ${outcome.value.toEmail} within a few minutes.`,
+      });
+      return outcome;
+    },
+    [sendEmailCommand],
   );
 
   const addTemplate = useCallback(
-    (input: TemplateInput) => run((snap, ctx) => createTemplate(snap, input, ctx)),
-    [run],
+    (input: TemplateInput) => dispatch("template.create", input),
+    [dispatch],
   );
 
   const editTemplate = useCallback(
     (templateId: TemplateId, input: TemplateInput) =>
-      run((snap, ctx) => updateTemplate(snap, templateId, input, ctx)),
-    [run],
+      dispatch("template.update", { templateId, input }),
+    [dispatch],
   );
 
   const removeTemplate = useCallback(
-    (templateId: TemplateId) => run((snap) => deleteTemplate(snap, templateId)),
-    [run],
+    (templateId: TemplateId) => dispatch("template.delete", { templateId }),
+    [dispatch],
   );
 
   return {
     templates,
     history,
+    email,
     prepare,
     log,
+    sendEmail,
     copyAndLog,
     openExternally,
-    simulateSend,
+    linkFor,
     addTemplate,
     editTemplate,
     removeTemplate,

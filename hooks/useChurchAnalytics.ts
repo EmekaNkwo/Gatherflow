@@ -82,7 +82,7 @@ export function useDashboard() {
   return useMemo(
     () => ({
       ...dashboardSummary(snapshot, now),
-      personal: personalSummary(snapshot, teamMemberId, now),
+      personal: personalSummary(snapshot, teamMemberId ?? "", now),
       churchName: snapshot.settings.churchName,
     }),
     [snapshot, now, teamMemberId],

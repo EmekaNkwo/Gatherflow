@@ -50,14 +50,33 @@ describe("renderTemplate", () => {
 });
 
 describe("draftMessage", () => {
-  it("prepares a message with an external link for the preferred channel", () => {
+  it("prepares a message for the preferred channel, with no ready-made link", () => {
     const draft = unwrap(
       draftMessage(base(), { personId: "person_visitor", templateId: welcome.id }, ctx()),
     );
 
     expect(draft.channel).toBe("whatsapp");
     expect(draft.body).toContain("Tunde");
-    expect(draft.externalLink).toContain("https://wa.me/");
+    expect(draft).not.toHaveProperty("externalLink");
+  });
+
+  it("does not count drafts or failed emails towards the contact limit", () => {
+    const entry = (index: number, status: "drafted" | "failed" | "copied") => ({
+      id: `comm_${index}`,
+      personId: "person_visitor",
+      channel: "whatsapp" as const,
+      status,
+      body: "Hello",
+      at: "2026-10-10T09:00:00.000Z",
+      actorId: "tm_coord_grace",
+      simulated: true as const,
+    });
+    const data = { ...base(), communications: [entry(1, "drafted"), entry(2, "drafted"), entry(3, "failed"), entry(4, "copied")] };
+
+    const draft = unwrap(draftMessage(data, { personId: "person_visitor", templateId: welcome.id }, ctx()));
+
+    expect(draft.recentContactCount).toBe(1);
+    expect(draft.limitWarning).toBeUndefined();
   });
 
   it("refuses to prepare anything for someone who opted out", () => {
@@ -95,7 +114,7 @@ describe("draftMessage", () => {
         id: `comm_${index}`,
         personId: "person_visitor",
         channel: "whatsapp" as const,
-        status: "simulated_sent" as const,
+        status: "opened_external" as const,
         body: "Hello",
         at: "2026-10-10T09:00:00.000Z",
         actorId: "tm_coord_grace",
@@ -120,6 +139,23 @@ describe("buildExternalLink", () => {
     expect(buildExternalLink("phone", "+44 7700 900111", undefined, "hi")).toContain("tel:");
     expect(buildExternalLink("in_person", "+44 7700 900111", undefined, "hi")).toBeUndefined();
     expect(buildExternalLink("email", undefined, undefined, "hi")).toBeUndefined();
+  });
+
+  it("keeps the whole international number for WhatsApp", () => {
+    expect(buildExternalLink("whatsapp", "+44 7700 900506", undefined, "hi")).toBe("https://wa.me/447700900506?text=hi");
+    expect(buildExternalLink("whatsapp", "07700 900506", undefined, "hi")).toBe("https://wa.me/447700900506?text=hi");
+    expect(buildExternalLink("whatsapp", "0803 123 4567", undefined, "hi", "234")).toBe("https://wa.me/2348031234567?text=hi");
+  });
+
+  it("offers no WhatsApp link for a number that can't be dialled", () => {
+    expect(buildExternalLink("whatsapp", "ask at the desk", undefined, "hi")).toBeUndefined();
+    expect(buildExternalLink("whatsapp", "12345", undefined, "hi")).toBeUndefined();
+  });
+
+  it("carries exactly the text it is given, edits included", () => {
+    expect(buildExternalLink("email", undefined, "a@example.com", "Edited & final")).toBe(
+      "mailto:a@example.com?body=Edited%20%26%20final",
+    );
   });
 });
 
@@ -163,11 +199,36 @@ describe("logCommunication", () => {
     });
     const outcome = logCommunication(
       base([optedOut]),
-      { personId: "person_visitor", channel: "sms", status: "simulated_sent", body: "Hi" },
+      { personId: "person_visitor", channel: "sms", status: "opened_external", body: "Hi" },
       ctx(),
     );
 
     expect(outcome.ok).toBe(false);
+  });
+
+  it("refuses to log a message to someone who never gave permission", () => {
+    const noPermission = visitor({
+      contact: { preferredMethod: "sms", permissionGranted: false, optedOut: false },
+    });
+    const outcome = logCommunication(
+      base([noPermission]),
+      { personId: "person_visitor", channel: "sms", status: "copied", body: "Hi" },
+      ctx(),
+    );
+
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.code).toBe("no_permission");
+  });
+
+  it.each([
+    ["drafted", "Draft saved"],
+    ["copied", "Copied"],
+    ["opened_external", "Opened in your messaging app"],
+  ] as const)("reads back %s naturally", (status, notice) => {
+    const outcome = unwrap(
+      logCommunication(base(), { personId: "person_visitor", channel: "sms", status, body: "Hi" }, ctx()),
+    );
+    expect(outcome.notices).toEqual([notice]);
   });
 });
 
@@ -254,5 +315,35 @@ describe("global search scoping", () => {
 
   it("ignores queries that are too short to be meaningful", () => {
     expect(globalSearch(data, "a", { role: "administrator" })).toEqual([]);
+  });
+});
+
+describe("gapsIn and strayBraces", () => {
+  it("lists unfilled placeholders and braces that aren't placeholders", async () => {
+    const { gapsIn, strayBraces } = await import("./template-engine");
+    expect(gapsIn("our {{groupName}} meets weekly")).toEqual(["{{groupName}}"]);
+    expect(strayBraces("Hi {firstName} and {{ first name }}")).toEqual(["{firstName}", "{{ first name }}"]);
+    expect(gapsIn("Hi Tunde, see you Sunday")).toEqual([]);
+  });
+});
+
+describe("summariseHistory", () => {
+  const entry = (status: "drafted" | "opened_external" | "sent", channel: "email" | "whatsapp", simulated: boolean) => ({
+    id: "c",
+    personId: "p",
+    channel,
+    status,
+    body: "",
+    at: "2026-10-10T09:00:00.000Z",
+    actorId: "tm",
+    simulated,
+  });
+
+  it("doesn't count a mailto hand-over as emailed, and keeps drafts apart", async () => {
+    const { summariseHistory } = await import("./messaging");
+    expect(
+      summariseHistory([entry("opened_external", "email", true), entry("drafted", "whatsapp", true), entry("sent", "email", false)]),
+    ).toBe("2 messages so far, 1 of them emailed by the church. Plus 1 saved draft.");
+    expect(summariseHistory([entry("opened_external", "email", true)])).toBe("1 message so far.");
   });
 });

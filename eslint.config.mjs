@@ -12,10 +12,12 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
-    // Throwaway scripts and Playwright output.
+    // Throwaway scripts and generated output.
     "tmp/**",
     "test-results/**",
     "playwright-report/**",
+    "coverage/**",
+    "server/db/migrations/**",
   ]),
 ]);
 

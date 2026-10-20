@@ -4,12 +4,14 @@ import { unwrap } from "@/lib/result";
 import { runAutomations } from "@/services/automation/rules";
 import { attendance, ctx, member, session, snapshot, visitor } from "@/tests/factories";
 import {
-  importAttendanceCsv,
+  attendanceForPerson,
   moveAttendance,
+  presentRecords,
   recordAttendance,
   removeAttendance,
   visitCount,
 } from "./check-in";
+import { importAttendanceCsv } from "./csv-import";
 import { createSession } from "./sessions";
 
 const base = () =>
@@ -20,8 +22,10 @@ const base = () =>
 
 describe("recordAttendance", () => {
   it("records a first visit when nothing else exists for that person", () => {
+    const firstTimer = visitor({ visitor: { ...visitor().visitor!, firstVisitDate: "2026-10-11" } });
+    const data = snapshot({ ...base(), people: [firstTimer, member()] });
     const outcome = unwrap(
-      recordAttendance(base(), { sessionId: "session_sunday", personId: "person_visitor" }, ctx()),
+      recordAttendance(data, { sessionId: "session_sunday", personId: "person_visitor" }, ctx()),
     );
 
     expect(outcome.snapshot.attendance).toHaveLength(1);
@@ -66,7 +70,12 @@ describe("recordAttendance", () => {
   });
 
   it("reports a return visit so the journey can be reviewed", () => {
-    const data = snapshot({ ...base(), attendance: [attendance({ sessionId: "session_midweek" })] });
+    const firstCameMidweek = visitor({ visitor: { ...visitor().visitor!, firstVisitDate: "2026-10-08" } });
+    const data = snapshot({
+      ...base(),
+      people: [firstCameMidweek, member()],
+      attendance: [attendance({ sessionId: "session_midweek" })],
+    });
     const outcome = unwrap(
       recordAttendance(data, { sessionId: "session_sunday", personId: "person_visitor" }, ctx()),
     );
@@ -170,7 +179,8 @@ describe("corrections", () => {
       action: "removed",
       reason: "Checked in by mistake",
     });
-    expect(visitCount(outcome.snapshot, "person_visitor")).toBe(0);
+    // The registered first visit (4 Oct) still counts; the removed row does not.
+    expect(visitCount(outcome.snapshot, "person_visitor")).toBe(1);
   });
 
   it("moves a record to the right session", () => {
@@ -255,5 +265,100 @@ describe("CSV import", () => {
 
   it("refuses an empty file", () => {
     expect(importAttendanceCsv(base(), "session_sunday", "", ctx()).ok).toBe(false);
+  });
+});
+
+describe("attendance queries", () => {
+  const data = () =>
+    snapshot({
+      ...base(),
+      attendance: [
+        attendance({ id: "a_sun", recordedAt: "2026-10-11T10:00:00.000Z" }),
+        attendance({ id: "a_mid", sessionId: "session_midweek", recordedAt: "2026-10-08T18:30:00.000Z" }),
+        attendance({ id: "a_removed", sessionId: "session_midweek", personId: "person_member", status: "removed" }),
+        attendance({ id: "a_member", personId: "person_member" }),
+      ],
+    });
+
+  it("lists present records for one session only", () => {
+    expect(presentRecords(data(), "session_sunday").map((row) => row.id)).toEqual(["a_sun", "a_member"]);
+    expect(presentRecords(data(), "session_midweek").map((row) => row.id)).toEqual(["a_mid"]);
+    expect(presentRecords(data(), "session_unknown")).toEqual([]);
+  });
+
+  it("lists a person's present records, most recent first", () => {
+    expect(attendanceForPerson(data(), "person_visitor").map((row) => row.id)).toEqual(["a_sun", "a_mid"]);
+    expect(attendanceForPerson(data(), "person_member").map((row) => row.id)).toEqual(["a_member"]);
+    expect(visitCount(data(), "person_member")).toBe(1);
+  });
+});
+
+describe("check-in details", () => {
+  it("defaults the method to search and logs a readable summary", () => {
+    const outcome = unwrap(recordAttendance(base(), { sessionId: "session_sunday", personId: "person_member" }, ctx()));
+    // A member is never a first-time visitor.
+    expect(outcome.snapshot.attendance[0]).toMatchObject({ method: "search", firstVisit: false, status: "present" });
+    expect(outcome.snapshot.activity[0].summary).toBe("Grace Adeyemi was recorded at Sunday service on 11 Oct 2026.");
+    expect(outcome.notices).toEqual(["Grace Adeyemi checked in to Sunday service."]);
+  });
+
+  it("refuses to remove a record twice or one that does not exist", () => {
+    const data = snapshot({ ...base(), attendance: [attendance({ status: "removed" })] });
+    expect(removeAttendance(data, "attendance_fixture", undefined, ctx())).toMatchObject({ ok: false, code: "unchanged" });
+    expect(removeAttendance(data, "nope", undefined, ctx())).toMatchObject({ ok: false, code: "not_found" });
+  });
+
+  it("describes a removal even when the person and session records are gone", () => {
+    const data = snapshot({ attendance: [attendance({ personId: "ghost", sessionId: "gone" })] });
+    const outcome = unwrap(removeAttendance(data, "attendance_fixture", undefined, ctx()));
+    expect(outcome.snapshot.activity[0].summary).toBe("Attendance for a person at a session was removed.");
+  });
+
+  it.each([
+    ["an unknown record", "nope", "session_midweek", "not_found"],
+    ["an unknown session", "attendance_fixture", "gone", "not_found"],
+    ["the same session", "attendance_fixture", "session_sunday", "unchanged"],
+  ])("refuses to move %s", (_label, recordId, target, code) => {
+    const data = snapshot({ ...base(), attendance: [attendance()] });
+    expect(moveAttendance(data, recordId, target, undefined, ctx())).toMatchObject({ ok: false, code });
+  });
+
+  it("moves a record whose person was deleted, and revives a removed one", () => {
+    const data = snapshot({ ...base(), attendance: [attendance({ personId: "ghost", status: "removed" })] });
+    const outcome = unwrap(moveAttendance(data, "attendance_fixture", "session_midweek", undefined, ctx()));
+    expect(outcome.snapshot.attendance[0]).toMatchObject({ sessionId: "session_midweek", status: "present" });
+    expect(outcome.snapshot.activity[0].summary).toBe("A person was moved to Midweek service on 8 Oct 2026.");
+    expect(outcome.notices).toEqual(["Attendance moved."]);
+  });
+});
+
+describe("CSV import details", () => {
+  it("accepts separate first and last name columns and reports counts in words", () => {
+    const csv = ["First Name,Last Name,Note", "Tunde,Balogun,", "Grace,Adeyemi,", "Ada,Okafor,", ",,walk-in"].join("\n");
+    const outcome = unwrap(importAttendanceCsv(base(), "session_sunday", csv, ctx()));
+    expect(outcome.summary).toEqual({
+      matched: 2,
+      skipped: 0,
+      unmatched: ["Ada Okafor", "(blank row)"],
+      duplicates: [],
+    });
+    expect(outcome.notices).toEqual(["2 attendance records imported.", "2 rows did not match anyone."]);
+  });
+
+  it("uses the phone as the label of an unmatched nameless row and the singular for one", () => {
+    const outcome = unwrap(importAttendanceCsv(base(), "session_sunday", "name,phone\nTunde Balogun,\n,07000 000000", ctx()));
+    expect(outcome.summary.unmatched).toEqual(["07000 000000"]);
+    expect(outcome.notices).toEqual(["1 attendance record imported.", "1 row did not match anyone."]);
+  });
+
+  it("reports duplicates in the notices", () => {
+    const data = snapshot({ ...base(), attendance: [attendance()] });
+    const outcome = unwrap(importAttendanceCsv(data, "session_sunday", "name\nTunde Balogun\nTunde Balogun", ctx()));
+    expect(outcome.summary).toMatchObject({ matched: 0, skipped: 2, duplicates: ["Tunde Balogun", "Tunde Balogun"] });
+    expect(outcome.notices).toEqual(["0 attendance records imported.", "2 already checked in."]);
+  });
+
+  it("refuses an unknown session", () => {
+    expect(importAttendanceCsv(base(), "gone", "name\nTunde Balogun", ctx())).toMatchObject({ ok: false, code: "not_found" });
   });
 });

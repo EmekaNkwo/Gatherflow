@@ -1,11 +1,17 @@
-import { addDaysIso } from "@/lib/dates";
+import { addDaysIso, formatDisplayDate } from "@/lib/dates";
 import { displayName } from "@/lib/strings";
-import type { FollowUpTaskType, TaskOutcome } from "@/types/follow-up";
+import {
+  FOLLOW_UP_TASK_TYPE_LABELS,
+  type FollowUpTask,
+  type FollowUpTaskType,
+  type TaskOutcome,
+} from "@/types/follow-up";
 import type { ChurchSnapshot } from "@/types/snapshot";
 import type { AutomationRuleConfig, AutomationRuleId } from "@/types/settings";
 import type { CommandContext } from "../core/context";
 import { result, type CommandResult, type DomainEvent } from "../core/events";
 import { activity, findPerson, patch, replaceById, withActivity } from "../core/snapshot";
+import { canBeContacted } from "../follow-ups/contact";
 import { createFollowUpTask } from "../follow-ups/tasks";
 import { isOpen } from "../follow-ups/tasks";
 import { advanceStage, isTerminalStage } from "../visitors/pipeline";
@@ -40,25 +46,39 @@ export function runAutomations(
         const person = findPerson(current, event.personId);
         if (!person) break;
 
+        // Without permission nobody is messaged: the welcome becomes a hello
+        // in person at their next visit, and the notice says exactly that.
+        const consented = canBeContacted(person);
+        // Registered as having been before: welcome them back, not as new.
+        const returning = Boolean(person.visitor?.returningVisitor);
+        const automationKey = `first_visit_welcome:${event.personId}:${event.firstVisitDate}`;
         const outcome = createFollowUpTask(
           current,
           {
             personId: event.personId,
-            type: "welcome_message",
+            type: consented ? "welcome_message" : "say_hello",
             assigneeId: person.visitor?.assignedTo ?? rule.defaultAssigneeId,
             dueDate: addDaysIso(ctx.today, rule.dueInDays),
             priority: person.visitor?.assignedTo ? "normal" : "high",
-            notes: "Send the first-time visitor welcome message.",
+            notes: consented
+              ? returning
+                ? "They've been before: send a welcome-back message."
+                : "Send the first-time visitor welcome message."
+              : "They haven't agreed to be contacted, so say hello in person next time they come. No messages.",
             origin: "rule:first_visit_welcome",
-            automationKey: `first_visit_welcome:${event.personId}:${event.firstVisitDate}`,
+            automationKey,
           },
           ctx,
         );
 
         if (outcome.ok) {
           current = outcome.value.snapshot;
+          const created = createdTask(current, automationKey);
           notices.push(
-            `Welcome follow-up created${person.visitor?.assignedTo ? "" : " for the follow-up team"}, due ${addDaysIso(ctx.today, rule.dueInDays)}.`,
+            consented
+              ? `${returning ? "Welcome-back" : "Welcome"} follow-up created ${ownerPhrase(current, created)}, due ${formatDisplayDate(created?.dueDate)}.`
+              : `They haven't agreed to be contacted, so no welcome message will be sent. A "${FOLLOW_UP_TASK_TYPE_LABELS.say_hello.toLowerCase()}" follow-up was created ${ownerPhrase(current, created)}, due ${formatDisplayDate(created?.dueDate)}.`,
+            ...inactiveNotices(outcome.value.notices),
           );
         } else if (outcome.code === "opted_out") {
           notices.push(outcome.error);
@@ -67,8 +87,6 @@ export function runAutomations(
       }
 
       case "visitor.returned": {
-        const rule = ruleFor(current, "return_visit_review");
-        if (!rule) break;
         const person = findPerson(current, event.personId);
         if (!person?.visitor) break;
 
@@ -97,6 +115,15 @@ export function runAutomations(
           notices.push(`${displayName(person)} moved to Returned (visit ${event.visitCount}).`);
         }
 
+        // They came back, so an open invitation to come has done its job.
+        // Closing it first also stops it hiding the check-in below.
+        const resolved = resolveInvitations(current, person.id, ctx);
+        current = resolved.snapshot;
+        notices.push(...resolved.notices);
+
+        // Past here is only the check-in task, which the rule controls.
+        const rule = ruleFor(current, "return_visit_review");
+        if (!rule) break;
         if (stopped.has(event.personId) || person.visitor.closure) break;
         if (isTerminalStage(current.settings, person.visitor.stageId)) break;
 
@@ -105,22 +132,30 @@ export function runAutomations(
         );
         if (hasOpenWork) break;
 
+        const consented = canBeContacted(person);
+        const automationKey = `return_visit_review:${person.id}:${event.visitCount}`;
         const outcome = createFollowUpTask(
           current,
           {
             personId: person.id,
-            type: "check_in",
+            type: consented ? "check_in" : "say_hello",
             assigneeId: person.visitor.assignedTo ?? rule.defaultAssigneeId,
             dueDate: addDaysIso(ctx.today, rule.dueInDays),
-            notes: `Returned for visit ${event.visitCount} — ask how they are finding things.`,
+            notes: consented
+              ? `Returned for visit ${event.visitCount} — ask how they are finding things.`
+              : `Returned for visit ${event.visitCount}. They haven't agreed to be contacted, so say hello in person.`,
             origin: "rule:return_visit_review",
-            automationKey: `return_visit_review:${person.id}:${event.visitCount}`,
+            automationKey,
           },
           ctx,
         );
         if (outcome.ok) {
           current = outcome.value.snapshot;
-          notices.push("A check-in follow-up was created for the return visit.");
+          const created = createdTask(current, automationKey);
+          notices.push(
+            `${FOLLOW_UP_TASK_TYPE_LABELS[created?.type ?? "check_in"]} follow-up for the return visit created ${ownerPhrase(current, created)}, due ${formatDisplayDate(created?.dueDate)}.`,
+            ...inactiveNotices(outcome.value.notices),
+          );
         }
         break;
       }
@@ -129,6 +164,7 @@ export function runAutomations(
         const rule = ruleFor(current, "membership_orientation");
         if (!rule || stopped.has(event.personId)) break;
 
+        const automationKey = `membership_orientation:${event.personId}`;
         const outcome = createFollowUpTask(
           current,
           {
@@ -139,13 +175,16 @@ export function runAutomations(
             priority: "high",
             notes: "Invite to the next membership orientation session.",
             origin: "rule:membership_orientation",
-            automationKey: `membership_orientation:${event.personId}`,
+            automationKey,
           },
           ctx,
         );
         if (outcome.ok) {
           current = outcome.value.snapshot;
-          notices.push("A membership orientation task was created.");
+          notices.push(
+            `A membership orientation task was created ${ownerPhrase(current, createdTask(current, automationKey))}.`,
+            ...inactiveNotices(outcome.value.notices),
+          );
         }
         break;
       }
@@ -164,7 +203,14 @@ export function runAutomations(
 
         const next = nextActionFor(event.outcome, task.type);
         if (!next) break;
+        if (!canBeContacted(person)) {
+          notices.push(
+            `No next step was set up, because ${displayName(person)} hasn't agreed to be contacted.`,
+          );
+          break;
+        }
 
+        const automationKey = `next_action:${task.id}`;
         const outcome = createFollowUpTask(
           current,
           {
@@ -175,13 +221,17 @@ export function runAutomations(
             priority: task.priority,
             notes: next.note,
             origin: "rule:next_action_suggestion",
-            automationKey: `next_action:${task.id}`,
+            automationKey,
           },
           ctx,
         );
         if (outcome.ok) {
           current = outcome.value.snapshot;
-          notices.push(`Next action created: ${next.note}`);
+          const created = createdTask(current, automationKey);
+          notices.push(
+            `Next step created ${ownerPhrase(current, created)}, due ${formatDisplayDate(created?.dueDate)}: ${next.note}`,
+            ...inactiveNotices(outcome.value.notices),
+          );
         }
         break;
       }
@@ -197,6 +247,72 @@ export function runAutomations(
   }
 
   return result(current, [], notices);
+}
+
+function createdTask(snapshot: ChurchSnapshot, automationKey: string): FollowUpTask | undefined {
+  return snapshot.tasks.find((task) => task.automationKey === automationKey);
+}
+
+/** "for Grace Mensah", or "with nobody assigned yet": who actually got it. */
+function ownerPhrase(snapshot: ChurchSnapshot, task: FollowUpTask | undefined): string {
+  const owner = task?.assigneeId
+    ? snapshot.team.find((member) => member.id === task.assigneeId)
+    : undefined;
+  return owner ? `for ${owner.name}` : "with nobody assigned yet";
+}
+
+/** Passes on task creation's warning that an inactive person was skipped. */
+function inactiveNotices(created: readonly string[]): string[] {
+  return created.filter((notice) => notice.includes("is inactive"));
+}
+
+/**
+ * Closes open invitations to a service once the person has come back: the
+ * invitation worked. Recorded as completed with a note, so the history
+ * shows what happened rather than a cancellation.
+ */
+function resolveInvitations(
+  snapshot: ChurchSnapshot,
+  personId: string,
+  ctx: CommandContext,
+): { snapshot: ChurchSnapshot; notices: string[] } {
+  const invitations = snapshot.tasks.filter(
+    (task) => task.personId === personId && task.type === "service_invitation" && isOpen(task),
+  );
+  if (!invitations.length) return { snapshot, notices: [] };
+
+  const ids = new Set(invitations.map((task) => task.id));
+  const next = patch(snapshot, {
+    tasks: snapshot.tasks.map((task) =>
+      ids.has(task.id)
+        ? {
+            ...task,
+            status: "completed" as const,
+            outcome: "other" as const,
+            outcomeNote: "They came back.",
+            completedAt: ctx.nowIso,
+            completedBy: ctx.actorId,
+          }
+        : task,
+    ),
+  });
+  const references = invitations.map((task) => task.reference).join(", ");
+  return {
+    snapshot: withActivity(
+      next,
+      ctx,
+      invitations.map((task) =>
+        activity(ctx, {
+          type: "follow_up.completed",
+          category: "follow_up",
+          personId,
+          summary: `${task.reference}: invitation to a service closed — they came back.`,
+          meta: { taskId: task.id },
+        }),
+      ),
+    ),
+    notices: [`${references} closed: they came back.`],
+  };
 }
 
 function ruleFor(

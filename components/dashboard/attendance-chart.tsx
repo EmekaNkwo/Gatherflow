@@ -13,7 +13,7 @@ import type { AttendanceTrendPoint } from "@/types/attendance";
 
 const CONFIG = {
   members: { label: "Members", color: "var(--chart-2)" },
-  visitors: { label: "Visitors", color: "var(--chart-4)" },
+  visitors: { label: "Visitors", color: "var(--chart-1)" },
 } satisfies ChartConfig;
 
 /**

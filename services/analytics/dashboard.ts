@@ -1,10 +1,20 @@
-import { toIsoDate, weekStart } from "@/lib/dates";
+import { format } from "date-fns";
+import { formatDisplayDate, toIsoDate, weekStart } from "@/lib/dates";
 import type { IsoDate, Ratio } from "@/types/common";
 import type { ActivityEvent } from "@/types/activity";
 import type { ChurchSnapshot } from "@/types/snapshot";
-import { completionRate, isDueToday, isOverdue, openTasks } from "../follow-ups/selectors";
+import {
+  completionRate,
+  isDueToday,
+  isOverdue,
+  needsOwner,
+  openTasks,
+} from "../follow-ups/selectors";
 import { averageWeeklyAttendance } from "./attendance";
-import { isTerminalStage } from "../visitors/pipeline";
+import { isAwaitingAssignment } from "../visitors/pipeline";
+import { visitIndex } from "../attendance/visits";
+import { firstVisitedThisMonth, hasNoNextStep } from "../visitors/selectors";
+import { isOpen } from "../follow-ups/tasks";
 
 /**
  * Dashboard metrics.
@@ -51,26 +61,16 @@ export function dashboardSummary(snapshot: ChurchSnapshot, now: Date): Dashboard
   );
 
   const visitors = snapshot.people.filter((person) => person.visitor);
-  const firstTimeThisMonth = visitors.filter(
-    (person) => (person.visitor?.firstVisitDate ?? "") >= monthStart,
+  // The same predicate as the list the tile opens.
+  const firstTimeThisMonth = visitors.filter((person) => firstVisitedThisMonth(snapshot, person, today));
+
+  // One definition of a visit (services/attendance/visits.ts), up to today.
+  const visitsOf = visitIndex(snapshot, { until: today });
+  const returningVisitors = visitors.filter(
+    (person) => !person.member && visitsOf(person).count > 1,
   );
 
-  const returningVisitors = visitors.filter((person) => {
-    if (person.member) return false;
-    const visits = snapshot.attendance.filter(
-      (row) => row.personId === person.id && row.status === "present",
-    ).length;
-    return visits > 1;
-  });
-
-  const awaitingAssignment = visitors.filter(
-    (person) =>
-      !person.member &&
-      person.visitor &&
-      !person.visitor.assignedTo &&
-      !person.visitor.closure &&
-      !isTerminalStage(snapshot.settings, person.visitor.stageId),
-  );
+  const awaitingAssignment = visitors.filter((person) => isAwaitingAssignment(snapshot.settings, person));
 
   const open = openTasks(snapshot);
   const dueToday = open.filter((task) => isDueToday(task, today));
@@ -89,21 +89,21 @@ export function dashboardSummary(snapshot: ChurchSnapshot, now: Date): Dashboard
       key: "first_time_visitors",
       label: "First-time visitors this month",
       value: firstTimeThisMonth.length,
-      detail: `First visit on or after ${monthStart}`,
-      href: "/visitors?filter=first_time",
+      detail: `First visit on or after ${formatDisplayDate(monthStart)}`,
+      href: "/visitors?filter=first_time_this_month",
     },
     {
       key: "returning_visitors",
       label: "Returning visitors",
       value: returningVisitors.length,
-      detail: "More than one recorded attendance, not yet members",
+      detail: "More than one visit, not yet members",
       href: "/visitors?filter=returning",
     },
     {
       key: "due_today",
       label: "Follow-ups due today",
       value: dueToday.length,
-      detail: `Open tasks due ${today}`,
+      detail: `Open tasks due ${formatDisplayDate(today)}`,
       href: "/follow-ups/tasks?due=today",
       tone: dueToday.length ? "warning" : "default",
     },
@@ -127,14 +127,14 @@ export function dashboardSummary(snapshot: ChurchSnapshot, now: Date): Dashboard
       key: "new_members",
       label: "New members this month",
       value: newMembersThisMonth.length,
-      detail: `Membership date on or after ${monthStart}`,
+      detail: `Membership date on or after ${formatDisplayDate(monthStart)}`,
       href: "/members?filter=new",
     },
     {
       key: "average_attendance",
       label: "Average weekly attendance",
       value: Math.round(weekly.average),
-      detail: `Mean of ${weekly.weeksCounted} recorded week${weekly.weeksCounted === 1 ? "" : "s"}`,
+      detail: `Different people a week, over ${weekly.weeksCounted} completed week${weekly.weeksCounted === 1 ? "" : "s"}`,
       href: "/attendance",
     },
   ];
@@ -172,30 +172,45 @@ export function attentionItems(snapshot: ChurchSnapshot, now: Date): AttentionIt
     });
   }
 
-  const unassigned = openTasks(snapshot).filter((task) => !task.assigneeId);
+  // Work left with somebody now inactive is as ownerless as unassigned work.
+  const unassigned = openTasks(snapshot).filter((task) => needsOwner(task, snapshot));
   if (unassigned.length) {
+    const withInactive = unassigned.filter((task) => task.assigneeId).length;
     items.push({
       id: "unassigned_tasks",
       title: `${unassigned.length} task${unassigned.length === 1 ? "" : "s"} with no owner`,
-      detail: "Every follow-up should have somebody responsible for it.",
+      detail: withInactive
+        ? `${withInactive} of them ${withInactive === 1 ? "is" : "are"} with somebody no longer active. Every follow-up should have somebody responsible for it.`
+        : "Every follow-up should have somebody responsible for it.",
       href: "/follow-ups/tasks?assignee=unassigned",
       tone: "warning",
     });
   }
 
-  const awaiting = snapshot.people.filter(
-    (person) =>
-      person.visitor &&
-      !person.member &&
-      !person.visitor.assignedTo &&
-      !person.visitor.closure,
-  );
+  const awaiting = snapshot.people.filter((person) => isAwaitingAssignment(snapshot.settings, person));
   if (awaiting.length) {
     items.push({
       id: "awaiting_assignment",
       title: `${awaiting.length} visitor${awaiting.length === 1 ? "" : "s"} awaiting assignment`,
       detail: "Assign a volunteer so somebody is responsible for the welcome.",
       href: "/visitors?filter=awaiting_assignment",
+      tone: "warning",
+    });
+  }
+
+  const stalled = snapshot.people.filter((person) =>
+    hasNoNextStep(
+      snapshot.settings,
+      person,
+      snapshot.tasks.filter((task) => task.personId === person.id && isOpen(task)).length,
+    ),
+  );
+  if (stalled.length) {
+    items.push({
+      id: "no_next_step",
+      title: `${stalled.length} visitor${stalled.length === 1 ? " has" : "s have"} no next step`,
+      detail: "Nothing is planned for them. Add a follow-up, or stop following up.",
+      href: "/visitors?filter=no_next_step",
       tone: "warning",
     });
   }
@@ -244,7 +259,7 @@ export function recentActivity(snapshot: ChurchSnapshot, limit = 20): ActivityEv
     .slice(0, limit);
 }
 
-/** Counts used by the "my work" summary for the signed-in demo user. */
+/** Counts used by the "my work" summary for the signed-in person. */
 export function personalSummary(
   snapshot: ChurchSnapshot,
   teamMemberId: string,
@@ -280,13 +295,18 @@ export function firstTimeVisitorTrend(
     const month = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-01`;
     buckets.push({
       month,
-      label: date.toLocaleString("en-GB", { month: "short" }),
+      // date-fns rather than the runtime's locale data, which differs between
+      // Node versions ("Sep" in one, "Sept" in another).
+      label: format(date, "MMM"),
       count: 0,
     });
   }
 
+  // The earliest visit we know of, and never somebody who had been before.
+  const visitsOf = visitIndex(snapshot, { until: toIsoDate(now) });
   for (const person of snapshot.people) {
-    const first = person.visitor?.firstVisitDate;
+    if (!person.visitor || person.visitor.returningVisitor) continue;
+    const first = visitsOf(person).firstVisitDate;
     if (!first) continue;
     const month = `${first.slice(0, 7)}-01`;
     const bucket = buckets.find((entry) => entry.month === month);

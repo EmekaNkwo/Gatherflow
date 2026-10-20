@@ -21,7 +21,11 @@ import {
 } from "@/types/attendance";
 import { GROUP_TYPES, WEEKDAYS, type Group } from "@/types/group";
 import { CARE_STATUSES, type CareRecord } from "@/types/care";
-import type { CommunicationLogEntry, MessageTemplate } from "@/types/communication";
+import {
+  COMMUNICATION_STATUS_LABELS,
+  type CommunicationLogEntry,
+  type MessageTemplate,
+} from "@/types/communication";
 import { DEMO_ROLES, type TeamMember } from "@/types/team";
 import type { ActivityEvent } from "@/types/activity";
 import { AUTOMATION_RULE_IDS, type ChurchSettings } from "@/types/settings";
@@ -61,6 +65,7 @@ const visitorProfileSchema = z.object({
   lastContactAt: isoDateTime.optional(),
   contactAttempts: z.number().int().min(0),
   membershipInterestAt: isoDateTime.optional(),
+  returningVisitor: z.boolean().optional(),
   closure: z
     .object({
       reason: z.enum([
@@ -302,11 +307,13 @@ export const communicationLogSchema: z.ZodType<CommunicationLogEntry> = z.object
   templateId: z.string().optional(),
   taskId: z.string().optional(),
   channel: enumOf(CONTACT_METHODS),
-  status: z.enum(["drafted", "copied", "opened_external", "simulated_sent"]),
+  status: enumOf(
+    Object.keys(COMMUNICATION_STATUS_LABELS) as (keyof typeof COMMUNICATION_STATUS_LABELS)[],
+  ),
   body: z.string(),
   at: isoDateTime,
   actorId: z.string(),
-  simulated: z.literal(true),
+  simulated: z.boolean(),
 });
 
 export const teamMemberSchema: z.ZodType<TeamMember> = z.object({
@@ -368,6 +375,7 @@ export const churchSettingsSchema: z.ZodType<ChurchSettings> = z.object({
     maxContactAttempts: z.number().int().min(1).max(10),
   }),
   defaultFollowUpDueInDays: z.number().int().min(0).max(90),
+  defaultCountryCallingCode: z.string().regex(/^[1-9]\d{0,2}$/).optional(),
 });
 
 /** Per-collection schemas, used by the snapshot repository. */

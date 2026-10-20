@@ -66,19 +66,32 @@ export function isPastDate(value: IsoDate, now: Date): boolean {
   return isBefore(parseISO(value), parseISO(toIsoDate(now)));
 }
 
+/** Shown instead of a date that can't be read, rather than breaking the page. */
+export const UNKNOWN_DATE_LABEL = "Unknown date";
+
+/**
+ * Formats a stored date for display. A malformed value (an impossible day
+ * such as 2026-02-31 that reached storage before validation was strict)
+ * shows "Unknown date" instead of throwing and taking the page down.
+ */
+function formatSafely(value: IsoDate | IsoDateTime, pattern: string): string {
+  const parsed = parseDate(value);
+  return Number.isNaN(parsed.getTime()) ? UNKNOWN_DATE_LABEL : format(parsed, pattern);
+}
+
 export function formatDisplayDate(value?: IsoDate | IsoDateTime): string {
   if (!value) return "—";
-  return format(parseDate(value), "d MMM yyyy");
+  return formatSafely(value, "d MMM yyyy");
 }
 
 export function formatShortDate(value?: IsoDate | IsoDateTime): string {
   if (!value) return "—";
-  return format(parseDate(value), "d MMM");
+  return formatSafely(value, "d MMM");
 }
 
 export function formatDisplayDateTime(value?: IsoDateTime): string {
   if (!value) return "—";
-  return format(parseDate(value), "d MMM yyyy, HH:mm");
+  return formatSafely(value, "d MMM yyyy, HH:mm");
 }
 
 export function formatTime(time?: string): string {

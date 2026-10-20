@@ -1,39 +1,56 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
+import Link from "next/link";
+import { SlidersHorizontalIcon } from "lucide-react";
+import { cn } from "cn";
 import { Button } from "@/components/ui/button";
-import { FlaskConicalIcon } from "lucide-react";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
-import { DataTable, TextCell, type GatherFlowColumn } from "@/components/shared/data-table";
 import { EmptyState, NoResultsState, RestrictedState } from "@/components/shared/empty-state";
 import { PageHeader, PageShell } from "@/components/shared/page-header";
-import { PersonCell, personHref } from "@/components/shared/person-cell";
-import { SimulatedBadge } from "@/components/shared/badges";
-import { StatTile } from "@/components/shared/metric-card";
+import { SelectField, type SelectOption } from "@/components/shared/select-field";
+import { personHref } from "@/components/shared/person-cell";
 import { formatDisplayDateTime } from "@/lib/dates";
-import { normalise } from "@/lib/strings";
+import { displayName, normalise } from "@/lib/strings";
 import { CONTACT_METHOD_LABELS } from "@/types/common";
-import {
-  COMMUNICATION_STATUS_LABELS,
-  type CommunicationStatus,
-} from "@/types/communication";
+import { COMMUNICATION_STATUS_LABELS, type CommunicationStatus } from "@/types/communication";
+import { summariseHistory } from "@/services/communications/messaging";
 import { useCommunications } from "@/hooks/useCommunications";
-import { useDemoRole } from "@/hooks/useDemoRole";
+import { useRole } from "@/hooks/useRole";
 
-type HistoryRow = ReturnType<typeof useCommunications>["history"][number];
+const PAGE_SIZE = 50;
+
+const STATUS_OPTIONS: SelectOption[] = [
+  { value: "", label: "Anything that happened" },
+  ...(Object.keys(COMMUNICATION_STATUS_LABELS) as CommunicationStatus[]).map((option) => ({
+    value: option,
+    label: COMMUNICATION_STATUS_LABELS[option],
+  })),
+];
+
+/** Reached them, as far as anyone can tell. */
+const GOOD: readonly CommunicationStatus[] = ["delivered"];
+/** Did not reach them; worth a look. */
+const PROBLEM: readonly CommunicationStatus[] = ["bounced", "blocked", "spam", "failed"];
+
+function tone(status: CommunicationStatus): string {
+  if (GOOD.includes(status)) return "bg-done";
+  if (PROBLEM.includes(status)) return "bg-destructive";
+  return "bg-muted-foreground/40";
+}
 
 /**
- * What has been sent — or rather, what has actually happened to each
- * message. The application cannot verify delivery, so it never claims it.
+ * Sent messages, person first: who it was for, then what happened to it in
+ * plain words. GatherFlow cannot see inside WhatsApp or a phone, so for those
+ * it only records what the sender did, and never claims delivery.
  */
 export default function CommunicationHistoryPage() {
-  const { can } = useDemoRole();
+  const { can } = useRole();
   const { history } = useCommunications();
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<CommunicationStatus | "">("");
+  const [moreFilters, setMoreFilters] = useState(false);
+  const [limit, setLimit] = useState(PAGE_SIZE);
 
   const rows = useMemo(() => {
     const needle = normalise(search);
@@ -46,69 +63,6 @@ export default function CommunicationHistoryPage() {
     });
   }, [history, search, status]);
 
-  const columns = useMemo<GatherFlowColumn<HistoryRow>[]>(
-    () => [
-      {
-        id: "person",
-        header: "Person",
-        accessorFn: (row) => row.person?.lastName ?? "",
-        cell: ({ row }) =>
-          row.original.person ? (
-            <PersonCell
-              person={row.original.person}
-              href={personHref(row.original.person)}
-              showOptOut={false}
-            />
-          ) : (
-            <TextCell value="Record deleted" />
-          ),
-      },
-      {
-        id: "status",
-        header: "What happened",
-        accessorFn: (row) => row.entry.status,
-        cell: ({ row }) => (
-          <div className="flex items-center gap-1.5">
-            <Badge variant="outline">
-              {COMMUNICATION_STATUS_LABELS[row.original.entry.status]}
-            </Badge>
-          </div>
-        ),
-      },
-      {
-        id: "channel",
-        header: "Channel",
-        accessorFn: (row) => row.entry.channel,
-        cell: ({ row }) => (
-          <TextCell value={CONTACT_METHOD_LABELS[row.original.entry.channel]} />
-        ),
-      },
-      {
-        id: "when",
-        header: "When",
-        accessorFn: (row) => row.entry.at,
-        cell: ({ row }) => <TextCell value={formatDisplayDateTime(row.original.entry.at)} />,
-      },
-      {
-        id: "by",
-        header: "By",
-        accessorFn: (row) => row.actor?.name ?? "",
-        cell: ({ row }) => <TextCell value={row.original.actor?.name} />,
-      },
-      {
-        id: "message",
-        header: "Message",
-        enableSorting: false,
-        cell: ({ row }) => (
-          <p className="max-w-md truncate text-sm text-muted-foreground">
-            {row.original.entry.body}
-          </p>
-        ),
-      },
-    ],
-    [],
-  );
-
   if (!can("communications.write")) {
     return (
       <PageShell>
@@ -117,92 +71,112 @@ export default function CommunicationHistoryPage() {
     );
   }
 
-  const counts = history.reduce<Record<string, number>>((acc, entry) => {
-    acc[entry.entry.status] = (acc[entry.entry.status] ?? 0) + 1;
-    return acc;
-  }, {});
+  const summary = summariseHistory(history.map((item) => item.entry));
+  const problems = history.filter((entry) => PROBLEM.includes(entry.entry.status)).length;
+  const shown = rows.slice(0, limit);
+  const filtered = Boolean(search || status);
 
   return (
-    <PageShell>
+    <PageShell className="max-w-4xl">
       <PageHeader
-        title="Communication history"
-        description="Every message GatherFlow has helped prepare, and what was done with it."
-        actions={<SimulatedBadge />}
+        title="Sent messages"
+        description="Every message prepared here, drafts included, and what happened to it. For WhatsApp, texts, calls and anything opened in your own email app we can only record what you did; for email the church sends, it is what the email provider told us."
       />
 
-      <Alert>
-        <FlaskConicalIcon />
-        <AlertTitle>No message is ever actually sent</AlertTitle>
-        <AlertDescription>
-          GatherFlow drafts text, copies it to your clipboard, or hands it to an app you already
-          have. &ldquo;Simulated send&rdquo; records that the demo pretended to send it. Real
-          delivery through SMS, email or WhatsApp needs a backend this project deliberately does
-          not have.
-        </AlertDescription>
-      </Alert>
+      {history.length ? (
+        <p className="max-w-2xl text-lg">
+          {summary}
+          {problems ? ` ${problems} did not get through.` : ""}
+        </p>
+      ) : null}
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <StatTile label="Drafted" value={counts.drafted ?? 0} />
-        <StatTile label="Copied" value={counts.copied ?? 0} />
-        <StatTile label="Opened externally" value={counts.opened_external ?? 0} />
-        <StatTile label="Simulated sends" value={counts.simulated_sent ?? 0} />
+      <div className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search by name or words in the message"
+            className="h-11 min-w-0 flex-1 rounded-full sm:max-w-80"
+            aria-label="Search communication history"
+          />
+          <Button
+            variant="ghost"
+            className="min-h-11 rounded-full"
+            aria-expanded={moreFilters}
+            onClick={() => setMoreFilters((open) => !open)}
+          >
+            <SlidersHorizontalIcon />
+            More filters
+          </Button>
+        </div>
+        {moreFilters ? (
+          <SelectField
+            value={status}
+            onValueChange={(value) => setStatus(value as CommunicationStatus | "")}
+            aria-label="Filter by what happened"
+            className="w-auto"
+            options={STATUS_OPTIONS}
+          />
+        ) : null}
       </div>
 
-      <DataTable
-        label="Communication history"
-        columns={columns}
-        data={rows}
-        getRowId={(row) => row.entry.id}
-        toolbar={
-          <>
-            <Input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search person or message text"
-              className="w-full sm:w-72"
-              aria-label="Search communication history"
-            />
-            <NativeSelect
-              value={status}
-              onChange={(event) => setStatus(event.target.value as CommunicationStatus | "")}
-              aria-label="Filter by what happened"
+      {shown.length ? (
+        <>
+          <ul className="divide-y overflow-hidden rounded-3xl border bg-card" aria-label="Communication history">
+            {shown.map(({ entry, person, actor }) => (
+              <li key={entry.id} className="min-h-14 space-y-1 px-5 py-3">
+                <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+                  {person ? (
+                    <Link href={personHref(person)} className="font-medium underline-offset-4 hover:underline">
+                      {displayName(person)}
+                    </Link>
+                  ) : (
+                    <span className="font-medium text-muted-foreground">Record deleted</span>
+                  )}
+                  <span className="text-sm text-muted-foreground">{formatDisplayDateTime(entry.at)}</span>
+                </div>
+                <p className="flex items-center gap-2 text-sm">
+                  <span aria-hidden className={cn("size-2 shrink-0 rounded-full", tone(entry.status))} />
+                  <span className={cn(PROBLEM.includes(entry.status) && "text-destructive")}>
+                    {COMMUNICATION_STATUS_LABELS[entry.status]}
+                  </span>
+                  <span className="text-muted-foreground">
+                    · {CONTACT_METHOD_LABELS[entry.channel]}
+                    {actor ? ` · by ${actor.name}` : ""}
+                  </span>
+                </p>
+                <p className="line-clamp-1 text-sm text-muted-foreground">{entry.body}</p>
+              </li>
+            ))}
+          </ul>
+          {rows.length > shown.length ? (
+            <Button variant="ghost" className="min-h-11 rounded-full" onClick={() => setLimit((value) => value + PAGE_SIZE)}>
+              Show more ({rows.length - shown.length} left)
+            </Button>
+          ) : null}
+        </>
+      ) : filtered ? (
+        <NoResultsState
+          context="messages"
+          onClear={
+            <Button
+              variant="outline"
+              className="min-h-11 rounded-full"
+              onClick={() => {
+                setSearch("");
+                setStatus("");
+              }}
             >
-              <NativeSelectOption value="">Anything</NativeSelectOption>
-              {(Object.keys(COMMUNICATION_STATUS_LABELS) as CommunicationStatus[]).map(
-                (option) => (
-                  <NativeSelectOption key={option} value={option}>
-                    {COMMUNICATION_STATUS_LABELS[option]}
-                  </NativeSelectOption>
-                ),
-              )}
-            </NativeSelect>
-          </>
-        }
-        emptyState={
-          search || status ? (
-            <NoResultsState
-              context="messages"
-              onClear={
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setSearch("");
-                    setStatus("");
-                  }}
-                >
-                  Clear filters
-                </Button>
-              }
-            />
-          ) : (
-            <EmptyState
-              title="No messages yet"
-              description="Prepare a message from a visitor or member record and it will appear here."
-            />
-          )
-        }
-      />
+              Clear filters
+            </Button>
+          }
+        />
+      ) : (
+        <EmptyState
+          title="No messages yet"
+          description="Prepare a message from someone's page and it will show here."
+        />
+      )}
     </PageShell>
   );
 }

@@ -111,6 +111,11 @@ export interface VisitorProfile {
   contactAttempts: number;
   /** Set when the visitor asks about membership. */
   membershipInterestAt?: IsoDateTime;
+  /**
+   * The visitor told us they had been before they were registered. Counts as
+   * one earlier, undated visit, so they are never shown as first-time.
+   */
+  returningVisitor?: boolean;
   closure?: {
     reason: ClosureReason;
     note?: string;

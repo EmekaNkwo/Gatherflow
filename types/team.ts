@@ -1,8 +1,8 @@
 import type { IsoDateTime, PersonId, TeamMemberId } from "./common";
 
 /**
- * Demo roles. These drive UI affordances only — the README states plainly
- * that real access control must be enforced by a backend.
+ * Roles. Each account holds one per church, read from its membership row on
+ * every request and enforced on the server; the interface only reflects it.
  */
 export type DemoRole =
   | "administrator"
@@ -45,10 +45,14 @@ export type Capability =
   | "tasks.write"
   | "tasks.assign"
   | "attendance.write"
+  /** Adding, changing and removing services — check-in is `attendance.write`. */
+  | "sessions.manage"
   | "groups.write"
   | "care.read"
   | "care.write"
   | "communications.write"
+  /** Creating, editing and deleting the church-wide message templates. */
+  | "templates.manage"
   | "analytics.read"
   | "settings.write"
   | "exports.run";

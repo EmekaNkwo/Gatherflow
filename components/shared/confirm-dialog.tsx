@@ -26,7 +26,7 @@ interface ConfirmDialogProps {
 
 /**
  * Confirmation for anything that is awkward to undo — deleting a record,
- * restoring the demo data, stopping follow-up for someone.
+ * deleting a record, stopping follow-up for someone.
  */
 export function ConfirmDialog({
   open,

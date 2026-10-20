@@ -10,7 +10,7 @@ import type { ChurchSnapshot } from "@/types/snapshot";
  */
 export type DomainEvent =
   | { type: "visitor.registered"; personId: PersonId; firstVisitDate: IsoDate }
-  | { type: "visitor.returned"; personId: PersonId; sessionId: SessionId; visitCount: number }
+  | { type: "visitor.returned"; personId: PersonId; sessionId?: SessionId; visitCount: number }
   | { type: "visitor.membership_interest"; personId: PersonId }
   | { type: "visitor.stage_changed"; personId: PersonId; stageId: string }
   | { type: "visitor.follow_up_stopped"; personId: PersonId }

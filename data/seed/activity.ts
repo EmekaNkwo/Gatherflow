@@ -164,7 +164,7 @@ export function createActivity(ctx: SeedContext, input: ActivityInput): Activity
       actorId: task.createdBy,
       summary: `${task.reference}: ${label} created for ${displayName(person)}.`,
       at: task.createdAt,
-      visibility: "general",
+      visibility: task.type === "pastoral_contact" ? "restricted" : "general",
       meta: { taskId: task.id },
     });
 

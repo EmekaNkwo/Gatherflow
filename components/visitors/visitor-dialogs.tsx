@@ -3,28 +3,37 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
+import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
+import { SelectField } from "@/components/shared/select-field";
+import {
+  ConsentChoice,
+  DialogActions,
+  DialogBody,
+  ResponsiveDialog,
+} from "@/components/people/responsive-dialog";
 import { CONTACT_METHODS, CONTACT_METHOD_LABELS, type ContactMethod } from "@/types/common";
 import { CLOSURE_REASON_LABELS, type ClosureReason } from "@/types/person";
 import type { TeamMember } from "@/types/team";
+
+const CLOSURE_REASON_OPTIONS = (Object.keys(CLOSURE_REASON_LABELS) as ClosureReason[]).map((option) => ({
+  value: option,
+  label: CLOSURE_REASON_LABELS[option],
+}));
+
+const CONTACT_METHOD_OPTIONS = CONTACT_METHODS.map((option) => ({
+  value: option,
+  label: CONTACT_METHOD_LABELS[option],
+}));
 
 /**
  * Visitor dialogs.
  *
  * Each one keeps its fields in a small child component keyed on what it is
  * editing, so opening the dialog again starts from clean values without an
- * effect that writes state during render.
+ * effect that writes state during render. On a phone each is a sheet from
+ * the bottom with its one main button in reach.
  */
 
 interface AssignDialogProps {
@@ -38,25 +47,20 @@ interface AssignDialogProps {
 
 export function AssignDialog({ open, onOpenChange, team, count, onConfirm }: AssignDialogProps) {
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Assign follow-up</DialogTitle>
-          <DialogDescription>
-            {count === 1
-              ? "One visitor will be assigned, and their open tasks move with them."
-              : `${count} visitors will be assigned, and their open tasks move with them.`}
-          </DialogDescription>
-        </DialogHeader>
-        {open ? (
-          <AssignFields
-            team={team}
-            onCancel={() => onOpenChange(false)}
-            onConfirm={onConfirm}
-          />
-        ) : null}
-      </DialogContent>
-    </Dialog>
+    <ResponsiveDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Who will look after them?"
+      description={
+        count === 1
+          ? "Anything still waiting for this person goes to them too."
+          : `For ${count} people. Anything still waiting for them goes too.`
+      }
+    >
+      {open ? (
+        <AssignFields team={team} onCancel={() => onOpenChange(false)} onConfirm={onConfirm} />
+      ) : null}
+    </ResponsiveDialog>
   );
 }
 
@@ -73,32 +77,27 @@ function AssignFields({
 
   return (
     <>
-      <Field>
-        <FieldLabel htmlFor="assignee">Follow-up person</FieldLabel>
-        <NativeSelect
-          className="w-full"
+      <DialogBody>
+        <SelectField
           id="assignee"
+          label="Person"
+          description="Only people on the team today can take this on."
           value={assignee}
-          onChange={(event) => setAssignee(event.target.value)}
-        >
-          {team.map((member) => (
-            <NativeSelectOption key={member.id} value={member.id}>
-              {member.name}
-              {member.title ? ` · ${member.title}` : ""}
-            </NativeSelectOption>
-          ))}
-        </NativeSelect>
-        <FieldDescription>Only active team members can take new work.</FieldDescription>
-      </Field>
-
-      <DialogFooter>
-        <Button variant="outline" onClick={onCancel}>
+          onValueChange={setAssignee}
+          options={team.map((member) => ({
+            value: member.id,
+            label: `${member.name}${member.title ? ` · ${member.title}` : ""}`,
+          }))}
+        />
+      </DialogBody>
+      <DialogActions>
+        <Button variant="ghost" size="lg" onClick={onCancel}>
           Cancel
         </Button>
-        <Button disabled={!assignee} onClick={() => onConfirm(assignee)}>
-          Assign
+        <Button size="lg" className="flex-1" disabled={!assignee} onClick={() => onConfirm(assignee)}>
+          Give it to them
         </Button>
-      </DialogFooter>
+      </DialogActions>
     </>
   );
 }
@@ -112,7 +111,7 @@ interface CloseFollowUpDialogProps {
 
 /**
  * Stops follow-up for a visitor. Not every visitor should be pushed through
- * every stage, and this records why the record is closing.
+ * every stage, and this records why.
  */
 export function CloseFollowUpDialog({
   open,
@@ -121,19 +120,14 @@ export function CloseFollowUpDialog({
   onConfirm,
 }: CloseFollowUpDialogProps) {
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Stop follow-up for {personName}</DialogTitle>
-          <DialogDescription>
-            Any open follow-up tasks are cancelled and no new ones are created automatically.
-          </DialogDescription>
-        </DialogHeader>
-        {open ? (
-          <CloseFollowUpFields onCancel={() => onOpenChange(false)} onConfirm={onConfirm} />
-        ) : null}
-      </DialogContent>
-    </Dialog>
+    <ResponsiveDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`Stop following up ${personName.split(" ")[0]}?`}
+      description="Anything still waiting for them is cancelled, and nothing new is set up."
+    >
+      {open ? <CloseFollowUpFields onCancel={() => onOpenChange(false)} onConfirm={onConfirm} /> : null}
+    </ResponsiveDialog>
   );
 }
 
@@ -150,61 +144,54 @@ function CloseFollowUpFields({
 
   return (
     <>
-      <Field>
-        <FieldLabel htmlFor="closure-reason">Outcome</FieldLabel>
-        <NativeSelect
-          className="w-full"
+      <DialogBody>
+        <SelectField
           id="closure-reason"
+          label="Why"
           value={reason}
-          onChange={(event) => setReason(event.target.value as ClosureReason)}
-        >
-          {(Object.keys(CLOSURE_REASON_LABELS) as ClosureReason[]).map((option) => (
-            <NativeSelectOption key={option} value={option}>
-              {CLOSURE_REASON_LABELS[option]}
-            </NativeSelectOption>
-          ))}
-        </NativeSelect>
-      </Field>
-
-      <Field>
-        <FieldLabel htmlFor="closure-note">Note (optional)</FieldLabel>
-        <Textarea
-          id="closure-note"
-          rows={3}
-          value={note}
-          onChange={(event) => setNote(event.target.value)}
-          placeholder="What was agreed with them."
+          onValueChange={(value) => setReason(value as ClosureReason)}
+          options={CLOSURE_REASON_OPTIONS}
         />
-      </Field>
 
-      <Field orientation="horizontal">
-        <Checkbox
+        <Field>
+          <FieldLabel htmlFor="closure-note">Note (optional)</FieldLabel>
+          <Textarea
+            id="closure-note"
+            maxLength={500}
+            rows={3}
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            placeholder="What was agreed with them."
+          />
+        </Field>
+
+        <ConsentChoice
           id="closure-opt-out"
-          checked={optOut}
-          onCheckedChange={(checked) => setOptOut(checked === true)}
-        />
-        <div>
-          <FieldLabel htmlFor="closure-opt-out" className="font-normal">
-            They asked not to be contacted again
-          </FieldLabel>
-          <FieldDescription>
-            Records an opt-out. Messages can no longer be drafted for them, and the record stays
-            so nobody asks again.
-          </FieldDescription>
-        </div>
-      </Field>
-
-      <DialogFooter>
-        <Button variant="outline" onClick={onCancel}>
-          Cancel
+          title="They asked us not to contact them again"
+          hint="We'll keep their record so nobody asks them twice, but no one can message them."
+          className="has-data-checked:border-destructive has-data-checked:bg-destructive/8"
+        >
+          <Checkbox
+            id="closure-opt-out"
+            className="size-5"
+            checked={optOut}
+            onCheckedChange={(checked) => setOptOut(checked === true)}
+          />
+        </ConsentChoice>
+      </DialogBody>
+      <DialogActions>
+        <Button variant="ghost" size="lg" onClick={onCancel}>
+          Keep going
         </Button>
         <Button
           variant="destructive"
+          size="lg"
+          className="flex-1"
           onClick={() => onConfirm(reason, note.trim() || undefined, optOut)}
         >
           Stop follow-up
         </Button>
-      </DialogFooter>
+      </DialogActions>
     </>
   );
 }
@@ -232,23 +219,16 @@ export function ContactPreferencesDialog({
   onConfirm,
 }: ContactPreferencesDialogProps) {
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Contact preferences</DialogTitle>
-          <DialogDescription>
-            How {personName} would like to hear from the church.
-          </DialogDescription>
-        </DialogHeader>
-        {open ? (
-          <ContactPreferenceFields
-            initial={initial}
-            onCancel={() => onOpenChange(false)}
-            onConfirm={onConfirm}
-          />
-        ) : null}
-      </DialogContent>
-    </Dialog>
+    <ResponsiveDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title={`How ${personName.split(" ")[0]} likes to hear from us`}
+      description="Only change this when they've told you."
+    >
+      {open ? (
+        <ContactPreferenceFields initial={initial} onCancel={() => onOpenChange(false)} onConfirm={onConfirm} />
+      ) : null}
+    </ResponsiveDialog>
   );
 }
 
@@ -268,67 +248,64 @@ function ContactPreferenceFields({
 
   return (
     <>
-      <Field>
-        <FieldLabel htmlFor="preference-method">Preferred method</FieldLabel>
-        <NativeSelect
-          className="w-full"
-          id="preference-method"
-          value={method}
-          onChange={(event) => setMethod(event.target.value as ContactMethod)}
-          disabled={optedOut}
-        >
-          {CONTACT_METHODS.map((option) => (
-            <NativeSelectOption key={option} value={option}>
-              {CONTACT_METHOD_LABELS[option]}
-            </NativeSelectOption>
-          ))}
-        </NativeSelect>
-      </Field>
-
-      <Field orientation="horizontal">
-        <Checkbox
+      <DialogBody>
+        <ConsentChoice
           id="preference-permission"
-          checked={permission && !optedOut}
-          disabled={optedOut}
-          onCheckedChange={(checked) => setPermission(checked === true)}
-        />
-        <FieldLabel htmlFor="preference-permission" className="font-normal">
-          Happy to be contacted about the church
-        </FieldLabel>
-      </Field>
-
-      <Field orientation="horizontal">
-        <Checkbox
-          id="preference-opt-out"
-          checked={optedOut}
-          onCheckedChange={(checked) => setOptedOut(checked === true)}
-        />
-        <div>
-          <FieldLabel htmlFor="preference-opt-out" className="font-normal">
-            Asked not to be contacted again
-          </FieldLabel>
-          <FieldDescription>
-            This always wins over any other preference. Open follow-up tasks are cancelled.
-          </FieldDescription>
-        </div>
-      </Field>
-
-      {optedOut ? (
-        <Field>
-          <FieldLabel htmlFor="preference-reason">Reason (optional)</FieldLabel>
-          <Input
-            id="preference-reason"
-            value={reason}
-            onChange={(event) => setReason(event.target.value)}
+          title="Happy for us to get in touch"
+          hint="Only tick this if they said yes."
+          className={optedOut ? "pointer-events-none opacity-50" : undefined}
+        >
+          <Checkbox
+            id="preference-permission"
+            className="size-5"
+            checked={permission && !optedOut}
+            disabled={optedOut}
+            onCheckedChange={(checked) => setPermission(checked === true)}
           />
-        </Field>
-      ) : null}
+        </ConsentChoice>
 
-      <DialogFooter>
-        <Button variant="outline" onClick={onCancel}>
+        <SelectField
+          id="preference-method"
+          label="Best way to reach them"
+          value={method}
+          onValueChange={(value) => setMethod(value as ContactMethod)}
+          disabled={optedOut}
+          options={CONTACT_METHOD_OPTIONS}
+        />
+
+        <ConsentChoice
+          id="preference-opt-out"
+          title="They asked us not to contact them again"
+          hint="This always wins. Anything still waiting for them is cancelled."
+          className="has-data-checked:border-destructive has-data-checked:bg-destructive/8"
+        >
+          <Checkbox
+            id="preference-opt-out"
+            className="size-5"
+            checked={optedOut}
+            onCheckedChange={(checked) => setOptedOut(checked === true)}
+          />
+        </ConsentChoice>
+
+        {optedOut ? (
+          <Field>
+            <FieldLabel htmlFor="preference-reason">Why (optional)</FieldLabel>
+            <Input
+              id="preference-reason"
+              value={reason}
+              maxLength={500}
+              onChange={(event) => setReason(event.target.value)}
+            />
+          </Field>
+        ) : null}
+      </DialogBody>
+      <DialogActions>
+        <Button variant="ghost" size="lg" onClick={onCancel}>
           Cancel
         </Button>
         <Button
+          size="lg"
+          className="flex-1"
           onClick={() =>
             onConfirm({
               preferredMethod: method,
@@ -338,9 +315,9 @@ function ContactPreferenceFields({
             })
           }
         >
-          Save preferences
+          Save
         </Button>
-      </DialogFooter>
+      </DialogActions>
     </>
   );
 }

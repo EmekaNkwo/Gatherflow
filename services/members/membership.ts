@@ -1,6 +1,8 @@
 import { nextReference } from "@/lib/ids";
 import { err, ok, type Result } from "@/lib/result";
-import { displayName } from "@/lib/strings";
+import { foldForSearch } from "@/lib/person-search";
+import { displayName, normaliseEmail, normalisePhone } from "@/lib/strings";
+import type { FollowUpTask, FollowUpTaskType } from "@/types/follow-up";
 import type { ContactMethod, IsoDate, PersonId } from "@/types/common";
 import {
   MEMBERSHIP_STATUS_LABELS,
@@ -12,7 +14,8 @@ import type { ChurchSnapshot } from "@/types/snapshot";
 import type { CommandContext } from "../core/context";
 import { result, type CommandResult, type DomainEvent } from "../core/events";
 import { activity, findPerson, patch, withActivity, withPerson } from "../core/snapshot";
-import { advanceStage } from "../visitors/pipeline";
+import { isOpen } from "../follow-ups/tasks";
+import { advanceStage, findStage } from "../visitors/pipeline";
 
 export interface RegisterMemberInput {
   /** Existing visitor to convert. Omit to create a brand-new member record. */
@@ -37,6 +40,123 @@ function nextMemberReference(snapshot: ChurchSnapshot): string {
 }
 
 /**
+ * How long a newly added member counts as "just added" for the duplicate
+ * check. Long enough to catch a double tap or a retried request, short
+ * enough that two genuinely different people who share a name and have no
+ * contact details can still be added on different days.
+ */
+export const DUPLICATE_WINDOW_MINUTES = 10;
+
+/**
+ * A member record with the same name and the same contact details, created
+ * in the last few minutes: almost certainly the same form sent twice.
+ */
+function findRecentDuplicate(
+  snapshot: ChurchSnapshot,
+  input: { firstName: string; lastName: string; phone?: string; email?: string },
+  ctx: CommandContext,
+): Person | undefined {
+  const name = foldForSearch(`${input.firstName} ${input.lastName}`);
+  const phone = normalisePhone(input.phone);
+  const email = normaliseEmail(input.email);
+  const since = ctx.now.getTime() - DUPLICATE_WINDOW_MINUTES * 60_000;
+
+  return snapshot.people.find(
+    (person) =>
+      person.member !== undefined &&
+      Date.parse(person.createdAt) >= since &&
+      foldForSearch(`${person.firstName} ${person.lastName}`) === name &&
+      normalisePhone(person.phone) === phone &&
+      normaliseEmail(person.email) === email,
+  );
+}
+
+/** Visitor follow-up that becoming a member makes unnecessary. */
+const VISITOR_PIPELINE_TASK_TYPES: readonly FollowUpTaskType[] = [
+  "welcome_message",
+  "say_hello",
+  "phone_call",
+  "check_in",
+  "service_invitation",
+  "membership_orientation",
+];
+
+function hasCompletedOrientation(snapshot: ChurchSnapshot, personId: PersonId): boolean {
+  return snapshot.activity.some(
+    (entry) => entry.personId === personId && entry.type === "membership.orientation_completed",
+  );
+}
+
+/**
+ * Closes the visitor follow-up a new member no longer needs, so stale work
+ * stops showing on Today:
+ *
+ * - an open orientation task is completed when orientation has already been
+ *   recorded, and cancelled otherwise (orientation can still be noted on
+ *   their member page);
+ * - open welcome, say-hello, phone-call, check-in and service-invitation tasks are
+ *   cancelled with a note saying why.
+ *
+ * Group invitations, pastoral contact and event follow-up stay open: they
+ * still make sense for a member.
+ */
+function closeVisitorFollowUp(
+  snapshot: ChurchSnapshot,
+  personId: PersonId,
+  ctx: CommandContext,
+): { snapshot: ChurchSnapshot; closed: number } {
+  const orientationDone = hasCompletedOrientation(snapshot, personId);
+  const stale = snapshot.tasks.filter(
+    (task) =>
+      task.personId === personId && isOpen(task) && VISITOR_PIPELINE_TASK_TYPES.includes(task.type),
+  );
+  if (!stale.length) return { snapshot, closed: 0 };
+
+  const staleIds = new Set(stale.map((task) => task.id));
+  const close = (task: FollowUpTask): FollowUpTask =>
+    task.type === "membership_orientation" && orientationDone
+      ? {
+          ...task,
+          status: "completed",
+          outcome: "contacted",
+          outcomeNote: "Orientation done; they became a member.",
+          completedAt: ctx.nowIso,
+          completedBy: ctx.actorId,
+        }
+      : {
+          ...task,
+          status: "cancelled",
+          notes: `${task.notes ? `${task.notes}\n` : ""}Cancelled: they became a member.`,
+        };
+
+  const next = withActivity(
+    patch(snapshot, {
+      tasks: snapshot.tasks.map((task) => (staleIds.has(task.id) ? close(task) : task)),
+    }),
+    ctx,
+    stale.map((task) =>
+      activity(ctx, {
+        type:
+          task.type === "membership_orientation" && orientationDone
+            ? "follow_up.completed"
+            : "follow_up.cancelled",
+        category: "follow_up",
+        personId,
+        summary: `${task.reference} closed — they became a member.`,
+        meta: { taskId: task.id },
+      }),
+    ),
+  );
+  return { snapshot: next, closed: stale.length };
+}
+
+function closedNotice(closed: number): string[] {
+  return closed
+    ? [`${closed} visitor follow-up task${closed === 1 ? "" : "s"} closed, as they're now a member.`]
+    : [];
+}
+
+/**
  * Registers a member — either by confirming an existing visitor or by
  * creating a new record.
  *
@@ -49,6 +169,10 @@ export function registerMember(
   ctx: CommandContext,
 ): Result<CommandResult & { personId: PersonId }> {
   const reference = nextMemberReference(snapshot);
+
+  if (input.householdId && !snapshot.households.some((entry) => entry.id === input.householdId)) {
+    return err("That household no longer exists. Choose another, or none.", "not_found");
+  }
 
   if (input.personId) {
     const person = findPerson(snapshot, input.personId);
@@ -105,10 +229,14 @@ export function registerMember(
       }),
     ]);
 
+    const closed = closeVisitorFollowUp(next, person.id, ctx);
     const events: DomainEvent[] = [{ type: "member.registered", personId: person.id }];
 
     return ok({
-      ...result(next, events, [`${displayName(person)} registered as a member (${reference}).`]),
+      ...result(closed.snapshot, events, [
+        `${displayName(person)} registered as a member (${reference}).`,
+        ...closedNotice(closed.closed),
+      ]),
       personId: person.id,
     });
   }
@@ -117,6 +245,18 @@ export function registerMember(
   const lastName = input.lastName?.trim();
   if (!firstName || !lastName) {
     return err("A first and last name are needed to create a member record.", "invalid");
+  }
+
+  const duplicate = findRecentDuplicate(
+    snapshot,
+    { firstName, lastName, phone: input.phone, email: input.email },
+    ctx,
+  );
+  if (duplicate) {
+    return err(
+      `${displayName(duplicate)} was added a moment ago (${duplicate.member?.reference}), so we didn't add them twice.`,
+      "duplicate",
+    );
   }
 
   const person: Person = {
@@ -238,17 +378,32 @@ export function recordMembershipInterest(
     return err("Membership interest has already been recorded.", "unchanged");
   }
 
+  // Interest moves them on to "exploring membership", unless they are
+  // already further along (advanceStage never moves anyone backwards).
+  const stageId = advanceStage(snapshot.settings, person, "membership_orientation");
+  const stage = stageId ? findStage(snapshot.settings, stageId) : undefined;
+
   const next = withPerson(
     snapshot,
     personId,
     (entry) => ({
       ...entry,
       visitor: entry.visitor
-        ? { ...entry.visitor, membershipInterestAt: ctx.nowIso }
+        ? {
+            ...entry.visitor,
+            membershipInterestAt: ctx.nowIso,
+            stageId: stageId ?? entry.visitor.stageId,
+            stageUpdatedAt: stageId ? ctx.nowIso : entry.visitor.stageUpdatedAt,
+          }
         : entry.visitor,
     }),
     ctx,
   );
+
+  const events: DomainEvent[] = [
+    { type: "visitor.membership_interest", personId },
+    ...(stageId ? [{ type: "visitor.stage_changed" as const, personId, stageId }] : []),
+  ];
 
   return ok(
     result(
@@ -259,8 +414,19 @@ export function recordMembershipInterest(
           personId,
           summary: `${displayName(person)} asked about becoming a member.`,
         }),
+        ...(stageId
+          ? [
+              activity(ctx, {
+                type: "visitor.stage_changed",
+                category: "visitor",
+                personId,
+                summary: `${displayName(person)} moved to "${stage?.name ?? stageId}".`,
+                meta: { stageId },
+              }),
+            ]
+          : []),
       ]),
-      [{ type: "visitor.membership_interest", personId }],
+      events,
       ["Membership interest recorded."],
     ),
   );
@@ -274,6 +440,9 @@ export function recordOrientationCompleted(
 ): Result<CommandResult> {
   const person = findPerson(snapshot, personId);
   if (!person) return err("That person is no longer in the directory.", "not_found");
+  if (hasCompletedOrientation(snapshot, personId)) {
+    return err(`Orientation is already recorded for ${displayName(person)}.`, "unchanged");
+  }
 
   return ok(
     result(

@@ -2,21 +2,13 @@
 
 import { useCallback, useMemo } from "react";
 import type { GroupId, PersonId } from "@/types/common";
-import {
-  addGroupMember,
-  createGroup,
-  peopleWithoutGroup,
-  removeGroupMember,
-  setGroupActive,
-  setGroupLeader,
-  type CreateGroupInput,
-} from "@/services/groups/groups";
+import { peopleWithoutGroup, type CreateGroupInput } from "@/services/groups/groups";
 import { useCommand, useSnapshot } from "./use-church-data";
 
 /** Groups and ministries, including who is not yet in one. */
 export function useGroups() {
   const snapshot = useSnapshot();
-  const { run } = useCommand();
+  const { dispatch } = useCommand();
 
   const groups = useMemo(() => {
     const peopleById = new Map(snapshot.people.map((person) => [person.id, person]));
@@ -35,36 +27,39 @@ export function useGroups() {
   const unconnected = useMemo(() => peopleWithoutGroup(snapshot), [snapshot]);
 
   const create = useCallback(
-    (input: CreateGroupInput) => run((snap, ctx) => createGroup(snap, input, ctx)),
-    [run],
+    (input: CreateGroupInput) => dispatch("group.create", input),
+    [dispatch],
   );
 
   const addMember = useCallback(
     (groupId: GroupId, personId: PersonId, role: "member" | "leader" | "assistant" = "member") =>
-      run((snap, ctx) => addGroupMember(snap, groupId, personId, role, ctx), {
-        undoLabel: "group assignment",
-      }),
-    [run],
+      dispatch(
+        "group.addMember",
+        { groupId, personId, role },
+        { undoLabel: "group assignment" },
+      ),
+    [dispatch],
   );
 
   const removeMember = useCallback(
     (groupId: GroupId, personId: PersonId) =>
-      run((snap, ctx) => removeGroupMember(snap, groupId, personId, ctx), {
-        undoLabel: "removing the group member",
-      }),
-    [run],
+      dispatch(
+        "group.removeMember",
+        { groupId, personId },
+        { undoLabel: "removing the group member" },
+      ),
+    [dispatch],
   );
 
   const assignLeader = useCallback(
     (groupId: GroupId, personId: PersonId) =>
-      run((snap, ctx) => setGroupLeader(snap, groupId, personId, ctx)),
-    [run],
+      dispatch("group.setLeader", { groupId, personId }),
+    [dispatch],
   );
 
   const setActive = useCallback(
-    (groupId: GroupId, active: boolean) =>
-      run((snap) => setGroupActive(snap, groupId, active)),
-    [run],
+    (groupId: GroupId, active: boolean) => dispatch("group.setActive", { groupId, active }),
+    [dispatch],
   );
 
   return { groups, unconnected, create, addMember, removeMember, assignLeader, setActive };

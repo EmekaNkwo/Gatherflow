@@ -6,9 +6,9 @@ import {
   type JourneyMilestone,
   type JourneyMilestoneKey,
 } from "@/types/activity";
-import type { Person } from "@/types/person";
 import type { ChurchSnapshot } from "@/types/snapshot";
 import { personAttendance } from "./attendance";
+import { visitIndex, visitSummary } from "../attendance/visits";
 
 /**
  * The visitor-to-member journey.
@@ -31,12 +31,16 @@ export function journeyFor(snapshot: ChurchSnapshot, personId: PersonId): Journe
   const person = snapshot.people.find((entry) => entry.id === personId);
   if (!person) return [];
 
-  const visits = personAttendance(snapshot, personId).filter(
-    (entry) => entry.record.status === "present",
-  );
-  const sortedVisits = [...visits].sort((left, right) =>
-    (left.session?.date ?? "") < (right.session?.date ?? "") ? -1 : 1,
-  );
+  const attended = personAttendance(snapshot, personId)
+    .filter((entry) => entry.record.status === "present" && entry.session)
+    .sort((left, right) => ((left.session?.date ?? "") < (right.session?.date ?? "") ? -1 : 1));
+  // Every dated visit, the registered one included, oldest first.
+  const visitDates = visitSummary(snapshot, personId).dates;
+  const sessionOn = (date: string | undefined) =>
+    date ? attended.find((entry) => entry.session?.date === date)?.session : undefined;
+  // Somebody who told us they had been before is on at least their second
+  // visit the first time we see them.
+  const secondVisitDate = person.visitor?.returningVisitor ? visitDates[0] : visitDates[1];
 
   const completedFollowUp = snapshot.tasks
     .filter(
@@ -66,12 +70,12 @@ export function journeyFor(snapshot: ChurchSnapshot, personId: PersonId): Journe
   const milestones: Array<{ key: JourneyMilestoneKey; at?: string; detail?: string }> = [
     {
       key: "first_visit",
-      at: person.visitor
-        ? `${person.visitor.firstVisitDate}T12:00:00.000Z`
-        : sortedVisits[0]?.session
-          ? `${sortedVisits[0].session.date}T12:00:00.000Z`
-          : undefined,
-      detail: person.visitor ? "Registered as a visitor" : "First recorded attendance",
+      at: visitDates[0] ? `${visitDates[0]}T12:00:00.000Z` : undefined,
+      detail: person.visitor?.returningVisitor
+        ? "First recorded visit (they had been before)"
+        : visitDates[0] === person.visitor?.firstVisitDate
+          ? "Registered as a visitor"
+          : "First recorded attendance",
     },
     {
       key: "follow_up_completed",
@@ -80,8 +84,8 @@ export function journeyFor(snapshot: ChurchSnapshot, personId: PersonId): Journe
     },
     {
       key: "second_visit",
-      at: sortedVisits[1]?.session ? `${sortedVisits[1].session.date}T12:00:00.000Z` : undefined,
-      detail: sortedVisits[1]?.session?.name,
+      at: secondVisitDate ? `${secondVisitDate}T12:00:00.000Z` : undefined,
+      detail: sessionOn(secondVisitDate)?.name,
     },
     {
       key: "membership_interest",
@@ -143,9 +147,14 @@ export function journeyReport(
   snapshot: ChurchSnapshot,
   range: DateRange,
 ): JourneyReport {
-  const cohort = snapshot.people.filter(
-    (person) => person.visitor && isWithinRange(person.visitor.firstVisitDate, range),
-  );
+  // First-time visitors by their earliest known visit, counted with the same
+  // definition of a visit as check-in (services/attendance/visits.ts).
+  const visitsOf = visitIndex(snapshot);
+  const cohort = snapshot.people.filter((person) => {
+    if (!person.visitor || person.visitor.returningVisitor) return false;
+    const first = visitsOf(person).firstVisitDate;
+    return first !== undefined && isWithinRange(first, range);
+  });
 
   const denominator = cohort.length;
   const contacted = cohort.filter((person) =>
@@ -157,7 +166,7 @@ export function journeyReport(
     ),
   ).length;
 
-  const returned = cohort.filter((person) => countVisits(snapshot, person) > 1).length;
+  const returned = cohort.filter((person) => visitsOf(person).count > 1).length;
   const requestedOrientation = cohort.filter(
     (person) => person.visitor?.membershipInterestAt,
   ).length;
@@ -175,12 +184,6 @@ export function journeyReport(
     joinedGroup: ratio(joinedGroup, denominator),
     closed: cohort.filter((person) => person.visitor?.closure).length,
   };
-}
-
-function countVisits(snapshot: ChurchSnapshot, person: Person): number {
-  return snapshot.attendance.filter(
-    (row) => row.personId === person.id && row.status === "present",
-  ).length;
 }
 
 /** The most recent milestone reached, for the pipeline card subtitle. */

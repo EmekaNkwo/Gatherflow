@@ -9,6 +9,7 @@ import {
   createTasksForPeople,
   isOpen,
   rescheduleTask,
+  startTask,
 } from "./tasks";
 import { selectTasks, completionRate, volunteerWorkloads } from "./selectors";
 
@@ -25,6 +26,16 @@ describe("createFollowUpTask", () => {
     expect(created.status).toBe("pending");
     expect(created.dueDate).toBe("2026-10-15"); // today + the 3-day default
     expect(created.origin).toBe("manual");
+  });
+
+  it("records a pastoral-care contact as restricted history, and other follow-ups as general", () => {
+    const pastoral = unwrap(
+      createFollowUpTask(base(), { personId: "person_visitor", type: "pastoral_contact" }, ctx()),
+    );
+    expect(pastoral.snapshot.activity[0].visibility).toBe("restricted");
+
+    const call = unwrap(createFollowUpTask(base(), { personId: "person_visitor", type: "phone_call" }, ctx()));
+    expect(call.snapshot.activity[0].visibility).toBe("general");
   });
 
   it("numbers references from the highest existing one", () => {
@@ -286,5 +297,214 @@ describe("task selectors", () => {
     const amara = workloads.find((entry) => entry.member.id === TEAM_IDS.volunteerAmara);
     expect(amara).toMatchObject({ assigned: 3, dueToday: 1, overdue: 1, completed: 2 });
     expect(amara?.completedOnTime).toBe(1);
+  });
+});
+
+describe("startTask", () => {
+  it("marks an open task as in progress without touching the input", () => {
+    const input = snapshot({ people: [visitor()], tasks: [task()] });
+    const outcome = unwrap(startTask(input, "task_fixture"));
+    expect(outcome.snapshot.tasks[0].status).toBe("in_progress");
+    expect(isOpen(outcome.snapshot.tasks[0])).toBe(true);
+    expect(outcome.notices).toEqual(["FU-0001 marked as in progress."]);
+    expect(input.tasks[0].status).toBe("pending");
+  });
+
+  it.each([
+    ["an unknown task", [task()], "nope", "not_found"],
+    ["a cancelled task", [task({ status: "cancelled" })], "task_fixture", "closed"],
+  ])("refuses %s", (_label, tasks, id, code) => {
+    const outcome = startTask(snapshot({ tasks }), id);
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.code).toBe(code);
+  });
+});
+
+describe("task command refusals and wording", () => {
+  const base = () => snapshot({ people: [visitor()], tasks: [task({ notes: "Prefers mornings" })] });
+
+  it("refuses to create a task for someone not in the directory", () => {
+    const outcome = createFollowUpTask(base(), { personId: "nobody", type: "check_in" }, ctx());
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.code).toBe("not_found");
+  });
+
+  it("creates with explicit due date, priority, assignee and notes", () => {
+    const outcome = unwrap(
+      createFollowUpTask(
+        snapshot({ people: [visitor()] }),
+        {
+          personId: "person_visitor",
+          type: "group_invitation",
+          dueDate: "2026-10-20",
+          priority: "high",
+          assigneeId: TEAM_IDS.coordinator,
+          notes: "Riverside group",
+          origin: "rule:first_visit_welcome",
+          automationKey: "key-1",
+        },
+        ctx(),
+      ),
+    );
+    expect(outcome.snapshot.tasks[0]).toMatchObject({
+      dueDate: "2026-10-20",
+      priority: "high",
+      assigneeId: TEAM_IDS.coordinator,
+      notes: "Riverside group",
+      origin: "rule:first_visit_welcome",
+      automationKey: "key-1",
+    });
+    expect(outcome.snapshot.activity[0].summary).toBe(
+      "FU-0001: invitation to a group created for Tunde Balogun.",
+    );
+    expect(outcome.notices).toEqual([
+      "FU-0001 created for Tunde Balogun, assigned to Grace Mensah, due 20 Oct 2026.",
+    ]);
+  });
+
+  it("unassigns a task", () => {
+    const outcome = unwrap(assignTask(base(), "task_fixture", undefined, ctx()));
+    expect(outcome.snapshot.tasks[0].assigneeId).toBeUndefined();
+    expect(outcome.notices).toEqual(["FU-0001 unassigned."]);
+    expect(outcome.snapshot.activity[0].summary).toBe("FU-0001 was unassigned.");
+  });
+
+  it("names the person when assigning, and copes when the person is gone", () => {
+    const named = unwrap(assignTask(base(), "task_fixture", TEAM_IDS.coordinator, ctx()));
+    expect(named.snapshot.activity[0].summary).toBe("FU-0001 assigned to Grace Mensah for Tunde Balogun.");
+
+    const orphan = unwrap(assignTask(snapshot({ tasks: [task()] }), "task_fixture", TEAM_IDS.coordinator, ctx()));
+    expect(orphan.snapshot.activity[0].summary).toBe("FU-0001 assigned to Grace Mensah.");
+  });
+
+  it.each([
+    ["an unknown task", "nope", TEAM_IDS.coordinator],
+    ["an unknown team member", "task_fixture", "tm_ghost"],
+  ])("refuses to assign %s", (_label, taskId, assigneeId) => {
+    const outcome = assignTask(base(), taskId, assigneeId, ctx());
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.code).toBe("not_found");
+  });
+
+  it.each([
+    ["an unknown task", [task()], "nope", "not_found"],
+    ["a completed task", [task({ status: "completed" })], "task_fixture", "closed"],
+  ])("refuses to reschedule %s", (_label, tasks, id, code) => {
+    const outcome = rescheduleTask(snapshot({ tasks }), id, "2026-10-30", undefined, ctx());
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.code).toBe(code);
+  });
+
+  it("records a reschedule without a reason", () => {
+    const outcome = unwrap(rescheduleTask(base(), "task_fixture", "2026-10-30", undefined, ctx()));
+    expect(outcome.snapshot.activity[0].summary).toBe("FU-0001 moved to 30 Oct 2026.");
+    expect(outcome.notices).toEqual(["FU-0001 moved to 30 Oct 2026."]);
+  });
+
+  it("appends the cancellation reason to existing notes, and leaves notes alone without one", () => {
+    const withReason = unwrap(cancelTask(base(), "task_fixture", "Moved away", ctx()));
+    expect(withReason.snapshot.tasks[0].notes).toBe("Prefers mornings\nCancelled: Moved away");
+    expect(withReason.snapshot.activity[0].summary).toBe("FU-0001 was cancelled — Moved away.");
+
+    const withoutReason = unwrap(cancelTask(base(), "task_fixture", undefined, ctx()));
+    expect(withoutReason.snapshot.tasks[0].notes).toBe("Prefers mornings");
+    expect(withoutReason.snapshot.activity[0].summary).toBe("FU-0001 was cancelled.");
+    expect(withoutReason.notices).toEqual(["FU-0001 cancelled."]);
+  });
+
+  it("refuses to cancel an unknown task", () => {
+    const outcome = cancelTask(base(), "nope", undefined, ctx());
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) expect(outcome.code).toBe("not_found");
+  });
+
+  it("bulk creation pluralises and names unknown ids it skipped", () => {
+    const outcome = createTasksForPeople(
+      snapshot({ people: [visitor(), visitor({ id: "p2", firstName: "Ada" })] }),
+      ["person_visitor", "p2", "ghost"],
+      { type: "check_in" },
+      ctx(),
+    );
+    expect(outcome.snapshot.tasks.map((entry) => entry.reference)).toEqual(["FU-0001", "FU-0002"]);
+    expect(outcome.notices).toEqual(["2 follow-up tasks created.", "Skipped 1: ghost."]);
+  });
+
+  it("bulk creation reports nothing skipped when everything worked", () => {
+    const outcome = createTasksForPeople(snapshot({ people: [visitor()] }), ["person_visitor"], { type: "check_in" }, ctx());
+    expect(outcome.notices).toEqual(["1 follow-up task created."]);
+  });
+});
+
+describe("audit fixes: consent, owners, dates and cancelling", () => {
+  const noPermission = () =>
+    snapshot({
+      people: [visitor({ contact: { preferredMethod: "phone", permissionGranted: false, optedOut: false } })],
+    });
+
+  it("refuses a messaging follow-up for somebody who never agreed to be contacted", () => {
+    const outcome = createFollowUpTask(noPermission(), { personId: "person_visitor", type: "welcome_message" }, ctx());
+    expect(outcome.ok).toBe(false);
+    if (!outcome.ok) {
+      expect(outcome.code).toBe("no_permission");
+      expect(outcome.error).toContain("Say hello in person");
+    }
+  });
+
+  it("allows a hello in person for somebody who never agreed to be contacted", () => {
+    const outcome = unwrap(
+      createFollowUpTask(noPermission(), { personId: "person_visitor", type: "say_hello" }, ctx()),
+    );
+    expect(outcome.snapshot.tasks[0].type).toBe("say_hello");
+  });
+
+  it("leaves a task unassigned, and says so, rather than give it to an inactive person", () => {
+    const outcome = unwrap(
+      createFollowUpTask(
+        base(),
+        { personId: "person_visitor", type: "phone_call", assigneeId: TEAM_IDS.volunteerEsther },
+        ctx(),
+      ),
+    );
+    expect(outcome.snapshot.tasks[0].assigneeId).toBeUndefined();
+    expect(outcome.notices).toEqual([
+      "FU-0001 created for Tunde Balogun, with nobody assigned yet, due 15 Oct 2026.",
+      "Esther Bello is inactive, so FU-0001 has been left with nobody assigned.",
+    ]);
+  });
+
+  it("refuses an unknown person picked by hand, but lets a rule fall back to nobody", () => {
+    const manual = createFollowUpTask(base(), { personId: "person_visitor", type: "phone_call", assigneeId: "tm_ghost" }, ctx());
+    expect(manual.ok).toBe(false);
+    if (!manual.ok) expect(manual.code).toBe("not_found");
+
+    const fromRule = unwrap(
+      createFollowUpTask(
+        base(),
+        { personId: "person_visitor", type: "phone_call", assigneeId: "tm_ghost", origin: "rule:first_visit_welcome" },
+        ctx(),
+      ),
+    );
+    expect(fromRule.snapshot.tasks[0].assigneeId).toBeUndefined();
+  });
+
+  it("refuses a due date in the past when creating or rescheduling", () => {
+    const created = createFollowUpTask(base(), { personId: "person_visitor", type: "phone_call", dueDate: "2026-10-01" }, ctx());
+    expect(created.ok).toBe(false);
+    if (!created.ok) expect(created.code).toBe("invalid");
+
+    const withTask = snapshot({ people: [visitor()], tasks: [task()] });
+    const moved = rescheduleTask(withTask, "task_fixture", "2026-10-01", undefined, ctx());
+    expect(moved.ok).toBe(false);
+    if (!moved.ok) expect(moved.code).toBe("invalid");
+
+    // Today itself is fine.
+    expect(createFollowUpTask(base(), { personId: "person_visitor", type: "phone_call", dueDate: TODAY }, ctx()).ok).toBe(true);
+  });
+
+  it("refuses to cancel a task that is already cancelled", () => {
+    const once = unwrap(cancelTask(snapshot({ people: [visitor()], tasks: [task()] }), "task_fixture", undefined, ctx()));
+    const twice = cancelTask(once.snapshot, "task_fixture", undefined, ctx());
+    expect(twice.ok).toBe(false);
+    if (!twice.ok) expect(twice.code).toBe("closed");
   });
 });

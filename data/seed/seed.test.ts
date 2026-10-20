@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { firstVisitRecordIds } from "@/services/attendance/visits";
 import { createSeedSnapshot } from "./index";
 
 const NOW = new Date("2026-10-12T09:00:00.000Z");
@@ -77,5 +78,20 @@ describe("seed data", () => {
         expect(note.visibility).toBe("restricted");
       }
     }
+  });
+
+  it("never has anybody attending before their own first visit (L5)", () => {
+    const snapshot = createSeedSnapshot(NOW);
+    const dateOf = new Map(snapshot.sessions.map((session) => [session.id, session.date]));
+    const early = snapshot.attendance.filter((row) => {
+      const first = snapshot.people.find((person) => person.id === row.personId)?.visitor?.firstVisitDate;
+      return first !== undefined && (dateOf.get(row.sessionId) ?? "") < first;
+    });
+    expect(early).toEqual([]);
+
+    // The stored first-visit flags agree with the ones worked out from the dates.
+    const derived = firstVisitRecordIds(snapshot);
+    const stored = snapshot.attendance.filter((row) => row.firstVisit).map((row) => row.id);
+    expect(new Set(stored)).toEqual(derived);
   });
 });

@@ -1,110 +1,174 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
-import { CalendarPlusIcon } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { LinkButton } from "@/components/shared/link-button";
-import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { EmptyState } from "@/components/shared/empty-state";
+import { CalendarPlusIcon, ChevronRightIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { CreateSessionDialog } from "@/components/attendance/session-dialogs";
+import { SessionList } from "@/components/attendance/session-list";
 import { PageHeader, PageShell, Section } from "@/components/shared/page-header";
-import { formatDisplayDate } from "@/lib/dates";
+import { toIsoDate } from "@/lib/dates";
 import { SERVICE_TYPE_LABELS } from "@/types/attendance";
-import { useAttendance } from "@/hooks/useAttendance";
+import { WEEKDAYS, type Weekday } from "@/types/group";
+import { RECENT_SERVICE_WEEKS, useAttendance } from "@/hooks/useAttendance";
 import { useGroupSchedule } from "@/hooks/useGroups";
 import { useSnapshot } from "@/hooks/use-church-data";
+import { useRole } from "@/hooks/useRole";
+import { useNow } from "@/hooks/use-now";
+
+/** "Every Sunday at 10:00". */
+function everyWeek(weekday: Weekday, time: string): string {
+  const day = WEEKDAYS.includes(weekday) ? `${weekday.charAt(0).toUpperCase()}${weekday.slice(1)}` : "week";
+  return `Every ${day} at ${time}`;
+}
+
+const ROW = "flex min-h-14 items-center gap-3 px-5 py-3";
 
 /**
- * The regular rhythm of the church — the services it runs each week, the
- * sessions scheduled next, and the group meetings around them.
+ * Services: when the church meets, in plain words. What's coming up is one
+ * tap from check-in; adding a one-off service is the single action here.
  */
 export default function ServicesPage() {
   const snapshot = useSnapshot();
-  const { upcoming } = useAttendance();
+  const now = useNow();
+  const { can, canRun } = useRole();
+  const { upcoming, past, summaries, addSession, updateSession, deleteSession } = useAttendance();
+  const today = toIsoDate(now);
+  const canManage = canRun("session.create", {
+    name: "Service",
+    date: today,
+    startTime: "10:00",
+    type: "sunday_service",
+  });
+  const totals = new Map(summaries.map((entry) => [entry.session.id, entry.total]));
+  const withTotals = (sessions: typeof upcoming) =>
+    sessions.map((session) => ({ session, total: totals.get(session.id) ?? 0 }));
+  const happened = past.filter((session) => session.date < today);
   const groups = useGroupSchedule();
+  const [creating, setCreating] = useState(false);
+
+  const services = [...snapshot.settings.services].sort(
+    (left, right) =>
+      WEEKDAYS.indexOf(left.weekday) - WEEKDAYS.indexOf(right.weekday) || left.time.localeCompare(right.time),
+  );
 
   return (
-    <PageShell>
+    <PageShell className="max-w-3xl space-y-10">
       <PageHeader
         title="Services & events"
-        description="The weekly pattern, and what is scheduled next. Service definitions are edited in Settings."
+        description="When the church meets, and what’s coming up."
         actions={
-          <LinkButton size="sm" href="/attendance" className="gap-1.5">
-            <CalendarPlusIcon />
-            Record attendance
-          </LinkButton>
+          canManage ? (
+            <Button size="lg" className="gap-1.5 rounded-full" onClick={() => setCreating(true)}>
+              <CalendarPlusIcon />
+              Add a service
+            </Button>
+          ) : null
         }
       />
 
-      <Section title="Regular services" description="Configured in Settings.">
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {snapshot.settings.services.map((service) => (
-            <Card key={service.id} className={service.active ? undefined : "opacity-70"}>
-              <CardHeader>
-                <CardTitle className="flex items-center justify-between gap-2 text-base">
-                  {service.name}
-                  {!service.active ? <Badge variant="outline">Paused</Badge> : null}
-                </CardTitle>
-                <CardDescription className="capitalize">
-                  {service.weekday} · {service.time} · {SERVICE_TYPE_LABELS[service.type]}
-                </CardDescription>
-              </CardHeader>
-            </Card>
-          ))}
-        </div>
+      <Section title="Coming up">
+        {upcoming.length ? (
+          <SessionList
+            entries={withTotals(upcoming)}
+            today={today}
+            canManage={canManage}
+            onUpdate={updateSession}
+            onDelete={deleteSession}
+          />
+        ) : (
+          <p className="rounded-2xl bg-muted px-5 py-6 text-muted-foreground">
+            {canManage
+              ? "Nothing coming up yet. Add a service and it will be ready for check-in."
+              : "Nothing coming up yet. When a service is added, it will be ready for check-in."}
+          </p>
+        )}
       </Section>
 
-      <Section title="Scheduled next" description="Sessions ready for check-in.">
-        {upcoming.length ? (
-          <ul className="space-y-2">
-            {upcoming.map((session) => (
-              <li key={session.id}>
-                <Link
-                  href={`/attendance/${session.id}`}
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-xl border p-3 hover:bg-muted/50"
-                >
-                  <div>
-                    <p className="font-medium">{session.name}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {formatDisplayDate(session.date)} · {session.startTime}
-                    </p>
-                  </div>
-                  <Badge variant="secondary">{SERVICE_TYPE_LABELS[session.type]}</Badge>
-                </Link>
+      {happened.length ? (
+        <Section
+          title="Recent services"
+          description={`The last ${RECENT_SERVICE_WEEKS} weeks, including any with nobody checked in yet.`}
+        >
+          <SessionList
+            entries={withTotals(happened)}
+            today={today}
+            canManage={canManage}
+            onUpdate={updateSession}
+            onDelete={deleteSession}
+          />
+        </Section>
+      ) : null}
+
+      <Section
+        title="Every week"
+        description={can("settings.write") ? undefined : "Your church’s regular pattern."}
+        actions={
+          can("settings.write") ? (
+            <Link href="/settings" className="inline-flex min-h-11 items-center text-sm font-medium text-primary hover:underline">
+              Change in Settings
+            </Link>
+          ) : null
+        }
+      >
+        {services.length ? (
+          <ul className="divide-y overflow-hidden rounded-3xl border bg-card">
+            {services.map((service) => (
+              <li key={service.id} className={ROW}>
+                <span className="min-w-0 flex-1">
+                  <span className={service.active ? "block truncate font-medium" : "block truncate font-medium text-muted-foreground"}>
+                    {service.name}
+                  </span>
+                  <span className="block text-sm text-muted-foreground">
+                    {everyWeek(service.weekday, service.time)} · {SERVICE_TYPE_LABELS[service.type]}
+                  </span>
+                </span>
+                {!service.active ? (
+                  <span className="shrink-0 rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
+                    Paused
+                  </span>
+                ) : null}
               </li>
             ))}
           </ul>
         ) : (
-          <EmptyState
-            title="Nothing scheduled yet"
-            description="Create a session from the attendance page to open check-in for it."
-          />
+          <p className="rounded-2xl bg-muted px-5 py-6 text-muted-foreground">No regular services set up yet.</p>
         )}
       </Section>
 
-      <Section title="Group meetings" description="The regular pattern for groups and ministries.">
+      <Section title="Group meetings">
         {groups.length ? (
-          <ul className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+          <ul className="divide-y overflow-hidden rounded-3xl border bg-card">
             {groups.map(({ group, schedule }) => (
               <li key={group.id}>
-                <Link
-                  href={`/groups/${group.id}`}
-                  className="flex items-center justify-between gap-2 rounded-xl border p-3 hover:bg-muted/50"
-                >
-                  <span className="truncate">{group.name}</span>
-                  <span className="shrink-0 text-xs text-muted-foreground capitalize">
-                    {schedule.weekday} {schedule.time}
+                <Link href={`/groups/${group.id}`} className={`${ROW} hover:bg-muted/50`}>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium">{group.name}</span>
+                    <span className="block text-sm text-muted-foreground">
+                      {everyWeek(schedule.weekday, schedule.time)}
+                    </span>
                   </span>
+                  <ChevronRightIcon className="size-5 shrink-0 text-muted-foreground" />
                 </Link>
               </li>
             ))}
           </ul>
         ) : (
-          <EmptyState
-            title="No group schedules"
-            description="Add a schedule when creating a group."
-          />
+          <p className="rounded-2xl bg-muted px-5 py-6 text-muted-foreground">
+            No group has a regular meeting time yet.
+          </p>
         )}
       </Section>
+
+      <CreateSessionDialog
+        open={creating}
+        onOpenChange={setCreating}
+        today={today}
+        onConfirm={async (input) => {
+          const outcome = await addSession(input);
+          if (outcome.ok) setCreating(false);
+        }}
+      />
     </PageShell>
   );
 }

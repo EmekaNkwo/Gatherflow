@@ -1,4 +1,4 @@
-import { addDaysIso } from "@/lib/dates";
+import { addDaysIso, formatDisplayDate } from "@/lib/dates";
 import { nextReference } from "@/lib/ids";
 import { err, ok, type Result } from "@/lib/result";
 import { displayName } from "@/lib/strings";
@@ -10,9 +10,11 @@ import {
   type TaskPriority,
 } from "@/types/follow-up";
 import type { ChurchSnapshot } from "@/types/snapshot";
+import type { TeamMember } from "@/types/team";
 import type { CommandContext } from "../core/context";
 import { result, type CommandResult } from "../core/events";
 import { activity, findPerson, patch, replaceById, withActivity } from "../core/snapshot";
+import { canBeContacted, needsContactPermission } from "./contact";
 
 export interface CreateTaskInput {
   personId: PersonId;
@@ -34,10 +36,29 @@ export function isOpen(task: FollowUpTask): boolean {
 }
 
 /**
+ * Who a new task can actually go to. An inactive team member never receives
+ * new work: the task is left unassigned instead, and the notice says so, so
+ * it shows up as needing an owner rather than sitting with somebody away.
+ */
+function resolveAssignee(
+  snapshot: ChurchSnapshot,
+  assigneeId: TeamMemberId | undefined,
+): { member?: TeamMember; skipped?: string; missing: boolean } {
+  if (!assigneeId) return { missing: false };
+  const member = snapshot.team.find((entry) => entry.id === assigneeId);
+  if (!member) return { missing: true };
+  if (!member.active) return { skipped: member.name, missing: false };
+  return { member, missing: false };
+}
+
+/**
  * Creates a follow-up task.
  *
- * Refuses outright for a person who has opted out of contact, and refuses
- * silently (as a duplicate) when a rule has already produced the same task.
+ * Refuses outright for a person who has opted out of contact, refuses a
+ * messaging follow-up for somebody who never agreed to be contacted, refuses
+ * a due date already in the past, and refuses silently (as a duplicate) when
+ * a rule has already produced the same task. The notice names who actually
+ * got the task.
  */
 export function createFollowUpTask(
   snapshot: ChurchSnapshot,
@@ -54,11 +75,31 @@ export function createFollowUpTask(
     );
   }
 
+  if (needsContactPermission(input.type) && !canBeContacted(person)) {
+    return err(
+      `${displayName(person)} hasn't agreed to be contacted, so a ${FOLLOW_UP_TASK_TYPE_LABELS[
+        input.type
+      ].toLowerCase()} can't be set up. You could add "${FOLLOW_UP_TASK_TYPE_LABELS.say_hello}" instead.`,
+      "no_permission",
+    );
+  }
+
+  if (input.dueDate && input.dueDate < ctx.today) {
+    return err("Choose today or a later day for the follow-up.", "invalid");
+  }
+
   if (input.automationKey) {
     const existing = snapshot.tasks.find((task) => task.automationKey === input.automationKey);
     if (existing) {
       return err(`A follow-up task for this already exists (${existing.reference}).`, "duplicate");
     }
+  }
+
+  const assignee = resolveAssignee(snapshot, input.assigneeId);
+  // A person picked by hand must exist; a rule pointing at somebody since
+  // removed simply leaves the task for the team to pick up.
+  if (assignee.missing && (input.origin ?? "manual") === "manual") {
+    return err("That team member no longer exists.", "not_found");
   }
 
   const dueDate =
@@ -72,7 +113,7 @@ export function createFollowUpTask(
     ),
     personId: input.personId,
     type: input.type,
-    assigneeId: input.assigneeId,
+    assigneeId: assignee.member?.id,
     priority: input.priority ?? "normal",
     dueDate,
     status: "pending",
@@ -96,10 +137,19 @@ export function createFollowUpTask(
           personId: person.id,
           summary: `${task.reference}: ${label} created for ${displayName(person)}.`,
           meta: { taskId: task.id },
+          // That somebody needs pastoral care is itself pastoral information.
+          visibility: task.type === "pastoral_contact" ? "restricted" : "general",
         }),
       ]),
       [],
-      [`${task.reference} created for ${displayName(person)}.`],
+      [
+        `${task.reference} created for ${displayName(person)}${
+          assignee.member ? `, assigned to ${assignee.member.name}` : ", with nobody assigned yet"
+        }, due ${formatDisplayDate(dueDate)}.`,
+        ...(assignee.skipped
+          ? [`${assignee.skipped} is inactive, so ${task.reference} has been left with nobody assigned.`]
+          : []),
+      ],
     ),
   );
 }
@@ -157,6 +207,7 @@ export function rescheduleTask(
   if (!task) return err("That task no longer exists.", "not_found");
   if (!isOpen(task)) return err("Completed and cancelled tasks cannot be rescheduled.", "closed");
   if (dueDate === task.dueDate) return err("That is already the due date.", "unchanged");
+  if (dueDate < ctx.today) return err("Choose today or a later day.", "invalid");
 
   const next = patch(snapshot, {
     tasks: replaceById(snapshot.tasks, taskId, (entry) => ({
@@ -178,12 +229,12 @@ export function rescheduleTask(
           type: "follow_up.rescheduled",
           category: "follow_up",
           personId: task.personId,
-          summary: `${task.reference} moved to ${dueDate}${reason ? ` — ${reason}` : ""}.`,
+          summary: `${task.reference} moved to ${formatDisplayDate(dueDate)}${reason ? ` — ${reason}` : ""}.`,
           meta: { taskId },
         }),
       ]),
       [],
-      [`${task.reference} rescheduled.`],
+      [`${task.reference} moved to ${formatDisplayDate(dueDate)}.`],
     ),
   );
 }
@@ -218,7 +269,8 @@ export function cancelTask(
 ): Result<CommandResult> {
   const task = snapshot.tasks.find((entry) => entry.id === taskId);
   if (!task) return err("That task no longer exists.", "not_found");
-  if (task.status === "completed") return err("Completed tasks cannot be cancelled.", "closed");
+  // Only open work can be stopped: cancelling twice would log it twice.
+  if (!isOpen(task)) return err("That follow-up has already been closed.", "closed");
 
   const next = patch(snapshot, {
     tasks: replaceById(snapshot.tasks, taskId, (entry) => ({

@@ -38,6 +38,9 @@ export function correctPerson(
   if (changes.lastName !== undefined && !trimmedLast) {
     return err("A last name is required.", "invalid");
   }
+  if (changes.householdId && !snapshot.households.some((entry) => entry.id === changes.householdId)) {
+    return err("That household no longer exists. Choose another, or none.", "not_found");
+  }
 
   const next = withPerson(
     snapshot,

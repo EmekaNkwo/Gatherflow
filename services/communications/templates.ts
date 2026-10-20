@@ -6,7 +6,7 @@ import type { ChurchSnapshot } from "@/types/snapshot";
 import type { CommandContext } from "../core/context";
 import { result, type CommandResult } from "../core/events";
 import { patch, replaceById } from "../core/snapshot";
-import { placeholdersIn } from "./template-engine";
+import { placeholdersIn, strayBraces } from "./template-engine";
 
 export interface TemplateInput {
   name: string;
@@ -26,9 +26,19 @@ function validate(input: TemplateInput): string | null {
   if (unknown.length) {
     return `Unknown placeholder${unknown.length === 1 ? "" : "s"}: ${unknown
       .map((entry) => `{{${entry}}}`)
-      .join(", ")}.`;
+      .join(", ")}.${suggestionFor(unknown[0])}`;
+  }
+  const stray = strayBraces(input.body);
+  if (stray.length) {
+    return `${stray.join(", ")} ${stray.length === 1 ? "isn't a placeholder" : "aren't placeholders"}. Write placeholders exactly like {{firstName}}, or remove the braces.`;
   }
   return null;
+}
+
+/** A gentle hint when the only mistake is capital letters, e.g. `{{firstname}}`. */
+function suggestionFor(unknown: string): string {
+  const match = TEMPLATE_PLACEHOLDERS.find((entry) => entry.toLowerCase() === unknown.toLowerCase());
+  return match ? ` Did you mean {{${match}}}?` : "";
 }
 
 export function createTemplate(

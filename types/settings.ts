@@ -81,4 +81,10 @@ export interface ChurchSettings {
   engagement: EngagementCriteria;
   /** Default due window for manually created follow-up tasks. */
   defaultFollowUpDueInDays: number;
+  /**
+   * Country calling code (digits, no `+`) assumed for phone numbers typed in
+   * local form, so a WhatsApp link reaches the right person. Missing means
+   * `DEFAULT_COUNTRY_CALLING_CODE` from `lib/phone.ts`.
+   */
+  defaultCountryCallingCode?: string;
 }

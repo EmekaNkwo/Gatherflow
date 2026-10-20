@@ -69,3 +69,26 @@ export function placeholdersIn(body: string): string[] {
   }
   return found;
 }
+
+const PLACEHOLDER_TOKEN = /\{\{\s*([\w]+)\s*\}\}/g;
+/** A brace with whatever it seems to wrap, so the warning can quote it. */
+const STRAY_BRACE = /\{\{?[^{}\n]{0,30}\}?\}?|\}\}?/g;
+
+/**
+ * Brace text that isn't a well-formed `{{placeholder}}`: `{{first-name}}`,
+ * `{firstName}`, `{{ first name }}` or a lone `}`. These would go out exactly
+ * as typed, so templates refuse them and the composer and preview flag them.
+ */
+export function strayBraces(body: string): string[] {
+  const withoutTokens = body.replace(PLACEHOLDER_TOKEN, " ");
+  const found = withoutTokens.match(STRAY_BRACE) ?? [];
+  return Array.from(new Set(found.map((entry) => entry.trim())));
+}
+
+/**
+ * Everything in a message that still needs a person's attention before it is
+ * sent: placeholders nobody filled in and braces that aren't placeholders.
+ */
+export function gapsIn(body: string): string[] {
+  return [...placeholdersIn(body).map((entry) => `{{${entry}}}`), ...strayBraces(body)];
+}

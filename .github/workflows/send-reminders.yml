@@ -1,0 +1,32 @@
+# Sends the daily follow-up reminders, for hosts without a cron of their own.
+#
+# The first run each day (07:00 UTC) is when reminders go out; each browser
+# gets at most one a day, so the later runs only retry anything that failed.
+# Change the hours to suit the congregation's mornings. Set two repository
+# secrets and the job starts working:
+#   REMINDERS_URL  https://<host>/api/cron/reminders
+#   CRON_SECRET    the deployment's CRON_SECRET
+# Without them every run is skipped, so the workflow is safe to commit as-is.
+name: Send daily reminders
+
+on:
+  schedule:
+    - cron: "0 7,10,13 * * *"
+  workflow_dispatch:
+
+jobs:
+  remind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Send
+        env:
+          REMINDERS_URL: ${{ secrets.REMINDERS_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$REMINDERS_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "REMINDERS_URL / CRON_SECRET not set; skipping."
+            exit 0
+          fi
+          curl --fail --silent --show-error -X POST \
+            -H "authorization: Bearer $CRON_SECRET" "$REMINDERS_URL"

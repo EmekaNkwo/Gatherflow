@@ -13,7 +13,7 @@ import type { JourneyMilestone } from "@/types/activity";
  */
 export function JourneyTimeline({ milestones }: { milestones: readonly JourneyMilestone[] }) {
   return (
-    <ol className="relative space-y-4 border-l pl-6">
+    <ol className="relative ml-2.5 space-y-5 border-l pl-6">
       {milestones.map((milestone) => {
         const reached = Boolean(milestone.at);
         return (
@@ -21,7 +21,7 @@ export function JourneyTimeline({ milestones }: { milestones: readonly JourneyMi
             <span
               className={cn(
                 "absolute -left-[31px] flex size-5 items-center justify-center rounded-full border bg-background",
-                reached ? "border-primary text-primary" : "border-dashed text-muted-foreground",
+                reached ? "border-done bg-done text-done-foreground" : "border-dashed text-muted-foreground",
               )}
             >
               {reached ? (
@@ -33,21 +33,21 @@ export function JourneyTimeline({ milestones }: { milestones: readonly JourneyMi
             <div className="space-y-0.5">
               <p
                 className={cn(
-                  "text-sm font-medium",
+                  "font-medium",
                   !reached && "text-muted-foreground",
                 )}
               >
                 {milestone.label}
                 {!reached && milestone.optional ? (
-                  <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+                  <span className="ml-1.5 text-sm font-normal text-muted-foreground">
                     (optional)
                   </span>
                 ) : null}
               </p>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-sm text-muted-foreground">
                 {reached
                   ? `${formatDisplayDate(milestone.at)}${milestone.detail ? ` · ${milestone.detail}` : ""}`
-                  : "Not recorded"}
+                  : "Not yet"}
               </p>
             </div>
           </li>

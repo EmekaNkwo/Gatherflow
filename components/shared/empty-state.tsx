@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { InboxIcon, LockIcon, SearchXIcon, type LucideIcon } from "lucide-react";
+import { RestrictedReason } from "./restricted-reason";
 import {
   Empty,
   EmptyContent,
@@ -11,7 +12,7 @@ import {
 
 interface EmptyStateProps {
   title: string;
-  description: string;
+  description: ReactNode;
   icon?: LucideIcon;
   action?: ReactNode;
 }
@@ -19,7 +20,7 @@ interface EmptyStateProps {
 /** Shown when a list has no records at all. */
 export function EmptyState({ title, description, icon: Icon = InboxIcon, action }: EmptyStateProps) {
   return (
-    <Empty className="rounded-xl border border-dashed">
+    <Empty className="rounded-3xl border border-dashed bg-card/50">
       <EmptyHeader>
         <EmptyMedia variant="icon">
           <Icon />
@@ -50,13 +51,13 @@ export function NoResultsState({
   );
 }
 
-/** Shown when the active demo role may not see a section. */
+/** Shown when the signed-in role may not see a section. */
 export function RestrictedState({ section }: { section: string }) {
   return (
     <EmptyState
       icon={LockIcon}
       title={`${section} is restricted`}
-      description="The demo role you are using is not authorised to see this section. Switch role in the header to view it as a pastor or administrator. In a real deployment this would be enforced by the server."
+      description={<RestrictedReason />}
     />
   );
 }

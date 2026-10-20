@@ -1,3 +1,4 @@
+import { formatDisplayDate } from "@/lib/dates";
 import { err, ok, type Result } from "@/lib/result";
 import { displayName } from "@/lib/strings";
 import type { ContactMethod, IsoDate, SessionId, TeamMemberId } from "@/types/common";
@@ -7,6 +8,7 @@ import type { CommandContext } from "../core/context";
 import { result, type CommandResult, type DomainEvent } from "../core/events";
 import { activity, patch, withActivity } from "../core/snapshot";
 import { recordAttendance } from "../attendance/check-in";
+import { visitCount } from "../attendance/visits";
 import { orderedStages } from "./pipeline";
 
 export interface RegisterVisitorInput {
@@ -15,6 +17,10 @@ export interface RegisterVisitorInput {
   preferredName?: string;
   phone?: string;
   email?: string;
+  /**
+   * The day of the visit. Ignored when `sessionId` is given: the visit is
+   * then on the day of that service, whatever the form sent.
+   */
   visitDate: IsoDate;
   /** Session attended, when the visitor is registered at a service. */
   sessionId?: SessionId;
@@ -36,7 +42,13 @@ export interface RegisterVisitorInput {
  *
  * Only a name is strictly required: nobody is forced to hand over a phone
  * number to be welcomed. Attendance is recorded at the same time when the
- * session is known, so the visit count comes from real attendance rows.
+ * session is known, and the first visit is then the service's own date, so
+ * the profile, the visitor list and the monthly figures never disagree with
+ * the attendance. A visit in the future is refused.
+ *
+ * A visitor who says they have been before is kept as such: they are never
+ * counted as first-time, and they move to "Returned" like anyone else
+ * coming back.
  */
 export function registerVisitor(
   snapshot: ChurchSnapshot,
@@ -47,6 +59,19 @@ export function registerVisitor(
   const lastName = input.lastName.trim();
   if (!firstName || !lastName) {
     return err("A first and last name are needed to create a record.", "invalid");
+  }
+
+  const session = input.sessionId
+    ? snapshot.sessions.find((entry) => entry.id === input.sessionId)
+    : undefined;
+  if (input.sessionId && !session) return err("That session no longer exists.", "not_found");
+
+  const visitDate = session?.date ?? input.visitDate;
+  if (visitDate > ctx.today) {
+    return err(
+      `${formatDisplayDate(visitDate)} hasn't happened yet. Register visitors on or after the day they came.`,
+      "invalid",
+    );
   }
 
   const stages = orderedStages(snapshot.settings);
@@ -82,7 +107,7 @@ export function registerVisitor(
       optedOut: false,
     },
     visitor: {
-      firstVisitDate: input.visitDate,
+      firstVisitDate: visitDate,
       source: input.source,
       firstSessionId: input.sessionId,
       assignedTo: input.assignedTo,
@@ -90,6 +115,7 @@ export function registerVisitor(
       stageUpdatedAt: ctx.nowIso,
       contactAttempts: 0,
       notes: input.notes?.trim() || undefined,
+      ...(input.returningVisitor ? { returningVisitor: true } : {}),
     },
     createdAt: ctx.nowIso,
     updatedAt: ctx.nowIso,
@@ -101,7 +127,7 @@ export function registerVisitor(
     {
       type: "visitor.registered",
       personId: person.id,
-      firstVisitDate: input.visitDate,
+      firstVisitDate: visitDate,
     },
   ];
   const notices: string[] = [`${displayName(person)} registered.`];
@@ -116,10 +142,19 @@ export function registerVisitor(
       },
       ctx,
     );
-    if (attendance.ok) {
-      next = attendance.value.snapshot;
-      events.push(...attendance.value.events);
-    }
+    if (!attendance.ok) return attendance;
+    next = attendance.value.snapshot;
+    events.push(...attendance.value.events);
+  }
+
+  // "They've been before": this visit is at least their second.
+  if (input.returningVisitor && !events.some((event) => event.type === "visitor.returned")) {
+    events.push({
+      type: "visitor.returned",
+      personId: person.id,
+      sessionId: input.sessionId,
+      visitCount: visitCount(next, person.id, { until: ctx.today }),
+    });
   }
 
   next = withActivity(next, ctx, [

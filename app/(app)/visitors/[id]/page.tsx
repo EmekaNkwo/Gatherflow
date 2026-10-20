@@ -1,51 +1,54 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import {
-  BanIcon,
-  MessageSquareIcon,
-  UserCheckIcon,
-  UserPlusIcon,
-} from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { CheckIcon, PlusIcon, UserPlusIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { SelectField } from "@/components/shared/select-field";
 import { LinkButton } from "@/components/shared/link-button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { EmptyState } from "@/components/shared/empty-state";
-import { OptedOutBadge, StageBadge } from "@/components/shared/badges";
-import { PageHeader, PageShell, Section } from "@/components/shared/page-header";
+import { PageShell, Section } from "@/components/shared/page-header";
 import { MessageComposer } from "@/components/communications/message-composer";
 import { CompleteTaskDialog } from "@/components/follow-ups/complete-task-dialog";
+import { CreateTaskDialog } from "@/components/follow-ups/create-task-dialog";
 import { RescheduleDialog } from "@/components/follow-ups/reschedule-dialog";
 import { TaskList } from "@/components/follow-ups/task-list";
+import { plainStageName } from "@/components/follow-ups/pipeline-board";
 import { JourneyTimeline } from "@/components/people/journey-timeline";
+import { Chip, PersonHero, type PersonMenuItem } from "@/components/people/person-hero";
 import {
   AttendanceHistoryPanel,
   CommunicationsPanel,
+  DetailList,
+  Disclosure,
+  FinishedFollowUps,
   TimelinePanel,
 } from "@/components/people/person-panels";
-import {
-  CloseFollowUpDialog,
-  ContactPreferencesDialog,
-} from "@/components/visitors/visitor-dialogs";
+import { CloseFollowUpDialog, ContactPreferencesDialog } from "@/components/visitors/visitor-dialogs";
 import { formatDisplayDate, toIsoDate } from "@/lib/dates";
 import { displayName, fullName } from "@/lib/strings";
 import { CONTACT_METHOD_LABELS } from "@/types/common";
 import { CLOSURE_REASON_LABELS, VISITOR_SOURCE_LABELS } from "@/types/person";
 import type { TaskWithPerson } from "@/services/follow-ups/selectors";
 import type { TaskOutcome } from "@/types/follow-up";
-import { useDemoRole } from "@/hooks/useDemoRole";
-import { useFollowUps, usePersonTasks } from "@/hooks/useFollowUps";
+import { useRole } from "@/hooks/useRole";
+import { useFollowUps, usePersonTasks, useTaskActionGate } from "@/hooks/useFollowUps";
 import { useMemberJourney } from "@/hooks/useMemberJourney";
 import { useMembers, usePerson } from "@/hooks/useMembers";
 import { useNow } from "@/hooks/use-now";
 import { usePersonAttendance } from "@/hooks/useAttendance";
 import { usePersonCommunications } from "@/hooks/useCommunications";
-import { useVisitor, useVisitors } from "@/hooks/useVisitors";
+import { useVisitor, useVisitorActionGate, useVisitors } from "@/hooks/useVisitors";
+import { useSnapshot } from "@/hooks/use-church-data";
 
-/** A visitor's record: journey, follow-up work, attendance and messages. */
+/** Refusals meaning the task changed elsewhere; the church is re-read, so close. */
+const STALE_CODES = new Set(["closed", "not_found"]);
+
+/**
+ * A visitor, at a glance: who they are and how to reach them, what is
+ * waiting for them, who is looking after them and where they are in their
+ * journey. Details, history and the rarer changes sit behind disclosure.
+ */
 export default function VisitorProfilePage() {
   const params = useParams<{ id: string }>();
   const personId = params.id;
@@ -59,11 +62,14 @@ export default function VisitorProfilePage() {
   const attendance = usePersonAttendance(personId);
   const communications = usePersonCommunications(personId);
 
-  const { assignableTeam, can } = useDemoRole();
-  const { assign, stopFollowUp, updateContactPreferences, expressMembershipInterest } =
-    useVisitors();
-  const { complete, reschedule } = useFollowUps();
+  const snapshot = useSnapshot();
+  const { assignableTeam, can, canRun, teamMemberId } = useRole();
+  const allows = useVisitorActionGate();
+  const allowsTask = useTaskActionGate();
+  const { assign, stopFollowUp, reopenFollowUp, updateContactPreferences, expressMembershipInterest } = useVisitors();
+  const { complete, reschedule, create, scope } = useFollowUps();
   const { register: registerMember } = useMembers();
+  const [planning, setPlanning] = useState(false);
 
   const [composing, setComposing] = useState(false);
   const [closing, setClosing] = useState(false);
@@ -71,14 +77,20 @@ export default function VisitorProfilePage() {
   const [completing, setCompleting] = useState<TaskWithPerson | null>(null);
   const [rescheduling, setRescheduling] = useState<TaskWithPerson | null>(null);
 
+  // A member who never had a visitor record belongs on the member page.
+  const memberOnly = Boolean(person?.member && !person.visitor);
+  useEffect(() => {
+    if (memberOnly) router.replace(`/members/${personId}`);
+  }, [memberOnly, personId, router]);
+
   if (!person) {
     return (
       <PageShell>
         <EmptyState
-          title="That record no longer exists"
-          description="It may have been deleted. Go back to the visitor directory to find someone else."
+          title="We can't find that person"
+          description="Their record may have been removed. Have a look in Visitors for someone else."
           action={
-            <LinkButton size="sm" href="/visitors">
+            <LinkButton size="lg" className="rounded-full" href="/visitors">
               Back to visitors
             </LinkButton>
           }
@@ -88,212 +100,227 @@ export default function VisitorProfilePage() {
   }
 
   const visitor = person.visitor;
-  const canEdit = can("visitors.write") || can("people.write");
+  const own = scope === "own";
+  // Each control is gated by the command it dispatches, so nothing offered
+  // here is refused by the server.
+  const canPreferences = allows("preferences", person);
+  const canAssign = allows("assign", person);
+  const canPlan =
+    Boolean(visitor) &&
+    !person.contact.optedOut &&
+    canRun("task.create", {
+      personId: person.id,
+      type: "say_hello",
+      assigneeId: own ? (teamMemberId ?? undefined) : undefined,
+    });
+  const canMakeMember =
+    !person.member && canRun("member.register", { personId: person.id, membershipDate: toIsoDate(now) });
+  const canNoteInterest = allows("membership", person);
+  const name = displayName(person);
+  const firstName = name.split(" ")[0];
+  const open = tasks.filter((entry) => entry.task.status !== "completed" && entry.task.status !== "cancelled");
+  const finished = tasks.filter((entry) => entry.task.status === "completed" || entry.task.status === "cancelled");
+  const visits = row?.visits ?? 0;
+
+  const menu: PersonMenuItem[] = [
+    ...(canPreferences ? [{ label: "How they like to be contacted", onSelect: () => setPreferences(true) }] : []),
+    ...(allows("reopen", person)
+      ? [{ label: "Reopen follow-up", onSelect: () => void reopenFollowUp(person.id) }]
+      : []),
+    ...(allows("stop", person)
+      ? [{ label: "Stop following up", onSelect: () => setClosing(true), destructive: true }]
+      : []),
+  ];
+
+  // A volunteer only sees their own follow-ups, so "nothing waiting" would
+  // be untrue when somebody else is looking after this person.
+  const keeper = visitor?.assignedTo && visitor.assignedTo !== teamMemberId ? row?.assigneeName : undefined;
+  const emptyMessage =
+    person.contact.optedOut || visitor?.closure
+      ? "Follow-up has stopped for them, so nothing new will be set up."
+      : own && keeper
+        ? `${keeper} is looking after ${firstName}, so their follow-ups aren't on your list.`
+        : own
+          ? `Nothing is waiting for you with ${firstName} right now.`
+          : `Nothing is waiting for ${firstName} right now.`;
 
   return (
-    <PageShell>
-      <PageHeader
-        title={displayName(person)}
-        description={
+    <PageShell className="max-w-4xl space-y-10">
+      <PersonHero
+        person={person}
+        eyebrow={
           visitor
-            ? `First visit ${formatDisplayDate(visitor.firstVisitDate)} · ${VISITOR_SOURCE_LABELS[visitor.source]} · ${row?.visits ?? 0} recorded visit${(row?.visits ?? 0) === 1 ? "" : "s"}`
-            : "This person has no visitor record."
+            ? `Visitor · first came ${formatDisplayDate(visitor.firstVisitDate)}`
+            : person.member
+              ? "Member"
+              : "Visitor"
         }
-        actions={
+        summary={
+          visitor
+            ? `${visits === 0 ? "No visits recorded yet" : visits === 1 ? "Been once" : `Been ${visits} times`}. ${
+                row?.assigneeName ? `${row.assigneeName} is looking after them.` : "Nobody is looking after them yet."
+              }`
+            : "There's no visitor record for them."
+        }
+        chips={
           <>
-            {canEdit && !person.contact.optedOut ? (
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-1.5"
-                onClick={() => setComposing(true)}
-              >
-                <MessageSquareIcon />
-                Prepare a message
-              </Button>
+            {row?.stage ? (
+              <Chip tone={row.stage.kind === "terminal" ? "muted" : "accent"}>
+                {row.statusLabel === row.stage.name ? plainStageName(row.stage) : row.statusLabel}
+              </Chip>
             ) : null}
-            {canEdit && !person.member ? (
-              <Button
-                variant="outline"
-                size="sm"
-                className="gap-1.5"
-                onClick={() => expressMembershipInterest(person.id)}
-                disabled={Boolean(visitor?.membershipInterestAt)}
-              >
-                <UserCheckIcon />
-                {visitor?.membershipInterestAt
-                  ? "Membership interest recorded"
-                  : "Record membership interest"}
-              </Button>
+            {person.contact.optedOut ? <Chip tone="warning">Do not contact</Chip> : null}
+            {visitor?.closure ? <Chip>{CLOSURE_REASON_LABELS[visitor.closure.reason]}</Chip> : null}
+            {visitor?.membershipInterestAt && !person.member ? (
+              <Chip tone="done">Interested in membership</Chip>
             ) : null}
-            {canEdit && !person.member ? (
-              <Button
-                size="sm"
-                className="gap-1.5"
-                onClick={() => {
-                  const outcome = registerMember({
-                    personId: person.id,
-                    membershipDate: toIsoDate(now),
-                  });
-                  if (outcome.ok) router.push(`/members/${person.id}`);
-                }}
-              >
-                <UserPlusIcon />
-                Register as a member
-              </Button>
-            ) : null}
-            {person.member ? (
-              <LinkButton size="sm" href={`/members/${person.id}`}>
-                Open member record
-              </LinkButton>
-            ) : null}
+            {person.member ? <Chip tone="done">Member</Chip> : null}
           </>
         }
+        onMessage={
+          can("communications.write") && canRun("communication.log", {
+            personId: person.id,
+            channel: person.contact.preferredMethod,
+            status: "drafted",
+            body: "",
+          }) && !person.contact.optedOut
+            ? () => setComposing(true)
+            : undefined
+        }
+        menu={menu}
       />
 
-      <div className="flex flex-wrap items-center gap-2">
-        {row?.stage ? (
-          <StageBadge name={row.statusLabel} terminal={row.stage.kind === "terminal"} />
-        ) : null}
-        {person.contact.optedOut ? <OptedOutBadge /> : null}
-        {!person.contact.permissionGranted && !person.contact.optedOut ? (
-          <Badge variant="outline">No contact permission</Badge>
-        ) : null}
-        {visitor?.closure ? (
-          <Badge variant="outline">{CLOSURE_REASON_LABELS[visitor.closure.reason]}</Badge>
-        ) : null}
-        {person.member ? <Badge variant="default">Member {person.member.reference}</Badge> : null}
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-3">
-        <Card>
-          <CardHeader>
-            <CardTitle>Contact</CardTitle>
-            <CardDescription>
-              {person.contact.optedOut
-                ? "They asked not to be contacted. Nothing will be drafted or scheduled."
-                : person.contact.permissionGranted
-                  ? `Happy to be contacted · prefers ${CONTACT_METHOD_LABELS[person.contact.preferredMethod].toLowerCase()}`
-                  : "No contact permission recorded."}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm">
-            <Detail label="Full name" value={fullName(person)} />
-            <Detail label="Phone" value={person.phone} />
-            <Detail label="Email" value={person.email} />
-            <Detail
-              label="Last contacted"
-              value={visitor?.lastContactAt ? formatDisplayDate(visitor.lastContactAt) : undefined}
-            />
-            <Detail label="Contact attempts" value={String(visitor?.contactAttempts ?? 0)} />
-            <Detail
-              label="Interests"
-              value={person.interests.length ? person.interests.join(", ") : undefined}
-            />
-            {canEdit ? (
-              <div className="flex flex-wrap gap-2 pt-2">
-                <Button variant="outline" size="sm" onClick={() => setPreferences(true)}>
-                  Contact preferences
-                </Button>
-                {!visitor?.closure ? (
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    className="gap-1.5"
-                    onClick={() => setClosing(true)}
-                  >
-                    <BanIcon />
-                    Stop follow-up
-                  </Button>
-                ) : null}
-              </div>
-            ) : null}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Follow-up owner</CardTitle>
-            <CardDescription>
-              Every visitor should have one person responsible for the welcome.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <p className="text-sm">
-              {row?.assigneeName ?? "Nobody is assigned yet."}
-            </p>
-            {canEdit ? (
-              <NativeSelect
-                className="w-full"
-                aria-label="Assign follow-up"
-                value={visitor?.assignedTo ?? ""}
-                onChange={(event) => assign(person.id, event.target.value || undefined)}
-              >
-                <NativeSelectOption value="">Unassigned</NativeSelectOption>
-                {assignableTeam.map((member) => (
-                  <NativeSelectOption key={member.id} value={member.id}>
-                    {member.name}
-                  </NativeSelectOption>
-                ))}
-              </NativeSelect>
-            ) : null}
-            {visitor?.notes ? (
-              <p className="rounded-lg bg-muted/50 p-2 text-xs text-muted-foreground">
-                {visitor.notes}
-              </p>
-            ) : null}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Journey</CardTitle>
-            <CardDescription>
-              Dated milestones, not a score. Some are optional and never block the others.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <JourneyTimeline milestones={journey.milestones} />
-          </CardContent>
-        </Card>
-      </div>
-
       <Section
-        title="Follow-up tasks"
-        description="Everything scheduled or completed for this person."
+        title={open.length ? (own ? "Waiting for you" : "Waiting for them") : "Nothing waiting"}
+        actions={
+          canPlan ? (
+            <Button variant="outline" className="min-h-11 gap-1.5 rounded-full" onClick={() => setPlanning(true)}>
+              <PlusIcon />
+              Plan a follow-up
+            </Button>
+          ) : undefined
+        }
       >
         <TaskList
-          tasks={tasks}
+          tasks={open}
           now={now}
-          emptyMessage="No follow-up tasks. If this person asked us to stop, that is expected."
-          onComplete={can("tasks.write") ? (task) => setCompleting(task) : undefined}
-          onReschedule={can("tasks.write") ? (task) => setRescheduling(task) : undefined}
-          onMessage={
-            can("communications.write") && !person.contact.optedOut
-              ? () => setComposing(true)
-              : undefined
-          }
+          emptyMessage={emptyMessage}
+          allows={allowsTask}
+          onComplete={(task) => setCompleting(task)}
+          onReschedule={(task) => setRescheduling(task)}
         />
       </Section>
 
-      <div className="grid gap-4 lg:grid-cols-3">
+      {canAssign ? (
+        <Section title="Who's looking after them">
+          <div className="space-y-3 rounded-3xl border bg-card p-5">
+            <label htmlFor="visitor-assignee" className="sr-only">
+              Who&apos;s looking after {firstName}
+            </label>
+            <SelectField
+              id="visitor-assignee"
+              value={visitor?.assignedTo ?? ""}
+              onValueChange={(value) => assign(person.id, value || undefined)}
+              options={[
+                { value: "", label: "Nobody yet" },
+                ...assignableTeam.map((member) => ({ value: member.id, label: member.name })),
+              ]}
+            />
+            <p className="text-sm text-muted-foreground">Anything still waiting for them goes to this person too.</p>
+            {visitor?.notes ? (
+              <p className="rounded-2xl bg-muted px-4 py-3 text-sm">{visitor.notes}</p>
+            ) : null}
+          </div>
+        </Section>
+      ) : visitor?.notes ? (
+        <p className="rounded-2xl bg-muted px-4 py-3 text-sm">{visitor.notes}</p>
+      ) : null}
+
+      <Section title="Their journey">
+        <div className="space-y-5 rounded-3xl border bg-card p-5">
+          <JourneyTimeline milestones={journey.milestones} />
+          {!person.member && (canMakeMember || canNoteInterest) ? (
+            <div className="flex flex-wrap gap-2 border-t pt-4">
+              {canMakeMember ? (
+                <Button
+                  variant="outline"
+                  size="lg"
+                  className="rounded-full"
+                  onClick={async () => {
+                    const outcome = await registerMember({ personId: person.id, membershipDate: toIsoDate(now) });
+                    if (outcome.ok) router.push(`/members/${person.id}`);
+                  }}
+                >
+                  <UserPlusIcon />
+                  Make them a member
+                </Button>
+              ) : null}
+              {canNoteInterest ? (
+                <Button
+                  variant="ghost"
+                  size="lg"
+                  className="rounded-full"
+                  onClick={() => expressMembershipInterest(person.id)}
+                  disabled={Boolean(visitor?.membershipInterestAt)}
+                >
+                  {visitor?.membershipInterestAt ? <CheckIcon /> : null}
+                  {visitor?.membershipInterestAt ? "Interest in membership noted" : "They'd like to become a member"}
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+          {person.member ? (
+            <div className="border-t pt-4">
+              <LinkButton variant="outline" size="lg" className="rounded-full" href={`/members/${person.id}`}>
+                Open their member page
+              </LinkButton>
+            </div>
+          ) : null}
+        </div>
+      </Section>
+
+      <FinishedFollowUps tasks={finished} />
+      <CommunicationsPanel entries={communications} />
+
+      <div className="space-y-3">
+        <Disclosure title="Their details" summary={[person.phone, person.email].filter(Boolean).join(" · ") || "No phone or email yet"}>
+          <DetailList
+            rows={[
+              { label: "Full name", value: fullName(person) },
+              { label: "Phone", value: person.phone },
+              { label: "Email", value: person.email },
+              {
+                label: "Getting in touch",
+                value: person.contact.optedOut
+                  ? "Asked not to be contacted"
+                  : person.contact.permissionGranted
+                    ? `Happy to hear from us, prefers ${CONTACT_METHOD_LABELS[person.contact.preferredMethod].toLowerCase()}`
+                    : "Hasn't agreed to be contacted",
+              },
+              { label: "How they found us", value: visitor ? VISITOR_SOURCE_LABELS[visitor.source] : undefined },
+              {
+                label: "Last spoken to",
+                value: visitor?.lastContactAt ? formatDisplayDate(visitor.lastContactAt) : undefined,
+              },
+              { label: "Times we've tried", value: String(visitor?.contactAttempts ?? 0) },
+              { label: "Interests", value: person.interests.length ? person.interests.join(", ") : undefined },
+            ]}
+          />
+          {canPreferences ? (
+            <Button variant="outline" size="lg" className="mt-4 rounded-full" onClick={() => setPreferences(true)}>
+              Change how they like to be contacted
+            </Button>
+          ) : null}
+        </Disclosure>
         <AttendanceHistoryPanel entries={attendance} />
-        <CommunicationsPanel entries={communications} />
-        <TimelinePanel
-          events={journey.timeline}
-          now={now}
-          restrictedHidden={journey.restrictedHidden}
-        />
+        <TimelinePanel events={journey.timeline} now={now} restrictedHidden={journey.restrictedHidden} />
       </div>
 
-      <MessageComposer
-        person={composing ? person : null}
-        onOpenChange={(open) => !open && setComposing(false)}
-      />
+      <MessageComposer person={composing ? person : null} onOpenChange={(open) => !open && setComposing(false)} />
       <CloseFollowUpDialog
         open={closing}
         onOpenChange={setClosing}
-        personName={displayName(person)}
+        personName={name}
         onConfirm={(reason, note, optOut) => {
           stopFollowUp(person.id, reason, note, optOut);
           setClosing(false);
@@ -302,7 +329,7 @@ export default function VisitorProfilePage() {
       <ContactPreferencesDialog
         open={preferences}
         onOpenChange={setPreferences}
-        personName={displayName(person)}
+        personName={name}
         initial={{
           preferredMethod: person.contact.preferredMethod,
           permissionGranted: person.contact.permissionGranted,
@@ -316,9 +343,27 @@ export default function VisitorProfilePage() {
       <CompleteTaskDialog
         task={completing}
         onOpenChange={(open) => !open && setCompleting(null)}
-        onConfirm={(outcome: TaskOutcome, note?: string) => {
-          if (completing) complete(completing.task.id, outcome, note);
-          setCompleting(null);
+        onConfirm={async (outcome: TaskOutcome, note?: string) => {
+          if (!completing) return;
+          // Stays open on a refusal so the answer isn't lost, unless the task
+          // changed elsewhere; the page then shows it as it now is.
+          const result = await complete(completing.task.id, outcome, note);
+          if (result.ok || STALE_CODES.has(result.code ?? "")) setCompleting(null);
+        }}
+      />
+      <CreateTaskDialog
+        open={planning}
+        onOpenChange={setPlanning}
+        people={snapshot.people}
+        team={assignableTeam}
+        today={toIsoDate(now)}
+        defaultDueInDays={snapshot.settings.defaultFollowUpDueInDays}
+        personId={person.id}
+        currentMemberId={teamMemberId ?? undefined}
+        ownOnly={own}
+        onConfirm={async (values) => {
+          const outcome = await create(values);
+          if (outcome.ok) setPlanning(false);
         }}
       />
       <RescheduleDialog
@@ -331,16 +376,5 @@ export default function VisitorProfilePage() {
         }}
       />
     </PageShell>
-  );
-}
-
-function Detail({ label, value }: { label: string; value?: string }) {
-  return (
-    <div className="flex items-baseline justify-between gap-3">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <span className={value ? "text-right" : "text-right text-muted-foreground"}>
-        {value ?? "—"}
-      </span>
-    </div>
   );
 }
