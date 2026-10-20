@@ -97,7 +97,7 @@ These are covered by the test suites and do not need repeating per deployment:
 
    | Host | How |
    | --- | --- |
-   | Vercel | `vercel.json` already declares a five-minute cron; Vercel sends the bearer itself. The Hobby plan allows daily crons only — change the schedule or use the GitHub workflow there. |
+   | Vercel | `vercel.json` declares a daily cron (06:00 UTC), the Hobby plan's limit; Vercel sends the bearer itself. For five-minute sends use the GitHub workflow, or on a paid plan set the schedule to `*/5 * * * *`. |
    | GitHub Actions | `.github/workflows/drain-outbox.yml` runs once `DRAIN_URL` and `CRON_SECRET` repository secrets are set. |
    | Render / Fly / anything with a cron job | `curl -XPOST -H "authorization: Bearer $CRON_SECRET" https://<host>/api/cron/drain-outbox` |
 
