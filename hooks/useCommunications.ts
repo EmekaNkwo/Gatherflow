@@ -17,7 +17,7 @@ import { createCommandContext } from "@/services/core/context";
 import { useChurchStore } from "@/stores/church-store";
 import { useSessionStore } from "@/stores/session-store";
 import type { SendEmailRequest } from "@/types/email";
-import { useCommand, useSnapshot } from "./use-church-data";
+import { useCommand, useSnapshot, type CommandOptions } from "./use-church-data";
 import { useNow } from "./use-now";
 
 /**
@@ -112,6 +112,21 @@ export function useCommunications() {
     [dispatch],
   );
 
+  /**
+   * Records emails the person says they sent from their own email app, one
+   * entry per recipient. Nothing was sent by the application, so this is
+   * asked of them after the hand-over rather than assumed before it.
+   */
+  const recordSentEmails = useCallback(
+    (entries: readonly { personId: PersonId; body: string }[], templateId?: TemplateId, options?: CommandOptions) =>
+      dispatch(
+        "communication.logMany",
+        { channel: "email", status: "sent_external", templateId, entries },
+        options,
+      ),
+    [dispatch],
+  );
+
   /** Copies the final text once the server has accepted the record. */
   const copyAndLog = useCallback(
     async (draft: MessageDraft, body: string, taskId?: TaskId): Promise<boolean> => {
@@ -189,6 +204,7 @@ export function useCommunications() {
     email,
     prepare,
     log,
+    recordSentEmails,
     sendEmail,
     copyAndLog,
     openExternally,

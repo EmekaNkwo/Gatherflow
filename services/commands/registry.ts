@@ -67,6 +67,7 @@ import {
   setGroupLeader,
 } from "@/services/groups/groups";
 import { logCommunication } from "@/services/communications/messaging";
+import { GROUP_MESSAGE_MAX_PEOPLE, logCommunications } from "@/services/communications/group-email";
 import {
   createTemplate,
   deleteTemplate,
@@ -647,6 +648,22 @@ export const COMMANDS = {
       body: z.string().max(5_000),
     }),
     run: logCommunication,
+  }),
+
+  "communication.logMany": define({
+    capability: "communications.write",
+    ownedBy: (snapshot, input, me) => input.entries.every((entry) => looksAfter(snapshot, entry.personId, me)),
+    schema: z.object({
+      channel: contactMethod,
+      status: communicationStatus,
+      templateId: optionalId,
+      entries: z
+        .array(z.object({ personId: id, body: z.string().max(5_000) }))
+        .min(1)
+        .max(GROUP_MESSAGE_MAX_PEOPLE)
+        .readonly(),
+    }),
+    run: logCommunications,
   }),
 
   "template.create": define({

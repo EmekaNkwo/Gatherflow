@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
-import { AlertTriangleIcon, CopyIcon, ExternalLinkIcon, MailIcon } from "lucide-react";
+import { useState } from "react";
+import { CopyIcon, ExternalLinkIcon, MailIcon } from "lucide-react";
+import { Notice } from "./notice";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -85,35 +86,6 @@ export function MessageComposer({ person, taskId, onOpenChange }: MessageCompose
         />
       ) : null}
     </ResponsiveDialog>
-  );
-}
-
-function Notice({
-  tone = "neutral",
-  title,
-  children,
-}: {
-  tone?: "neutral" | "destructive";
-  title: string;
-  children: ReactNode;
-}) {
-  return (
-    <div
-      role={tone === "destructive" ? "alert" : "status"}
-      className={
-        tone === "destructive"
-          ? "flex gap-3 rounded-2xl bg-destructive/10 px-4 py-3 text-sm"
-          : "flex gap-3 rounded-2xl bg-muted px-4 py-3 text-sm"
-      }
-    >
-      <AlertTriangleIcon
-        className={tone === "destructive" ? "mt-0.5 size-4 shrink-0 text-destructive" : "mt-0.5 size-4 shrink-0 text-primary"}
-      />
-      <div>
-        <p className="font-medium">{title}</p>
-        <p className="text-muted-foreground">{children}</p>
-      </div>
-    </div>
   );
 }
 

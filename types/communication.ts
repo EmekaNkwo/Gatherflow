@@ -65,7 +65,8 @@ export interface MessageTemplate {
  * Two groups, and the distinction matters. The *manual* statuses describe what
  * a person did with a draft — copied it, opened it in their own messaging app
  * — because the application handed it over and cannot know any more than
- * that. The *email* statuses describe a real send through a provider, and each
+ * that. `sent_external` is the one step further a person can vouch for: they
+ * said they sent it from their own email app. The *email* statuses describe a real send through a provider, and each
  * one corresponds to something the provider actually told us — none is inferred.
  *
  * `sent` means our provider accepted the request. `delivered` means the
@@ -73,7 +74,7 @@ export interface MessageTemplate {
  * available: Mailjet reports it as its `sent` event, and there is no later
  * "the human read it" signal that could honestly be recorded.
  */
-export type ManualCommunicationStatus = "drafted" | "copied" | "opened_external";
+export type ManualCommunicationStatus = "drafted" | "copied" | "opened_external" | "sent_external";
 
 export type EmailCommunicationStatus =
   | "queued"
@@ -92,6 +93,7 @@ export const MANUAL_COMMUNICATION_STATUSES: readonly ManualCommunicationStatus[]
   "drafted",
   "copied",
   "opened_external",
+  "sent_external",
 ];
 
 export const EMAIL_COMMUNICATION_STATUSES: readonly EmailCommunicationStatus[] = [
@@ -109,6 +111,7 @@ export const COMMUNICATION_STATUS_LABELS: Record<CommunicationStatus, string> = 
   drafted: "Draft prepared",
   copied: "Copied to clipboard",
   opened_external: "Opened in your messaging app",
+  sent_external: "Sent from your own email",
   queued: "Queued to send",
   sent: "Sent to the provider",
   delivered: "Delivered to their mail server",
