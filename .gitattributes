@@ -1,0 +1,5 @@
+# One line ending everywhere. Git for Windows converts to CRLF on checkout by
+# default, while git under WSL does not, so the same working tree looked
+# modified to one of them and blocked pulls. LF in the repository and in every
+# working tree, whichever git checks it out.
+* text=auto eol=lf
