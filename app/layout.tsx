@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { Metadata } from "next";
-import { Atkinson_Hyperlegible_Next, Fraunces, Geist_Mono } from "next/font/google";
+import { Atkinson_Hyperlegible_Next, Geist_Mono, Nunito } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
@@ -12,11 +12,10 @@ const bodyFont = Atkinson_Hyperlegible_Next({
   subsets: ["latin"],
 });
 
-// Headings and the day's greeting: a soft, warm serif.
-const displayFont = Fraunces({
+// Headings and the day's greeting: rounded and soft.
+const displayFont = Nunito({
   variable: "--font-display",
   subsets: ["latin"],
-  axes: ["SOFT", "WONK", "opsz"],
 });
 
 const geistMono = Geist_Mono({

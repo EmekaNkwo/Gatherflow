@@ -1,16 +1,25 @@
 "use client";
 
+import { WelcomeButton } from "@/components/visitors/welcome-button";
 import { useMemo, useRef, useState } from "react";
-import { CheckIcon, SearchIcon, UserPlusIcon, XIcon } from "lucide-react";
+import { CheckIcon, SearchIcon, Undo2Icon, UserPlusIcon, XIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { LinkButton } from "@/components/shared/link-button";
-import { displayName, normalise } from "@/lib/strings";
+import { matchesPersonQuery } from "@/lib/person-search";
+import { displayName } from "@/lib/strings";
 import type { Person } from "@/types/person";
+import type { HereEntry } from "./here-list";
 
 interface CheckInSearchProps {
-  /** People not yet checked in to this service. */
-  notPresent: readonly Person[];
+  /** The service being checked in to; somebody new is welcomed into it. */
+  sessionId: string;
+  /** Everyone in the directory. */
+  people: readonly Person[];
+  /** Who is already checked in to this service. */
+  present: readonly HereEntry[];
   onCheckIn: (person: Person) => void;
+  /** Takes somebody who is already here off the list again. */
+  onUndo: (entry: HereEntry) => void;
 }
 
 const MAX_RESULTS = 20;
@@ -19,22 +28,30 @@ const MAX_RESULTS = 20;
  * Search-first check-in: type a few letters of a name, tap the person, and
  * the box clears ready for the next one. Phone numbers and member numbers
  * still match, for the rare time two people share a name.
+ *
+ * Everyone is searched, not only the people still to arrive: somebody who
+ * is already here shows as "Already here" with Undo, so nobody is ever told
+ * "nobody called that" and invited to create a duplicate. "Welcome someone
+ * new" is offered only when nobody at all matches.
  */
-export function CheckInSearch({ notPresent, onCheckIn }: CheckInSearchProps) {
+export function CheckInSearch({ sessionId, people, present, onCheckIn, onUndo }: CheckInSearchProps) {
   const [search, setSearch] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
-  const needle = normalise(search);
+  const needle = search.trim();
+
+  const hereByPerson = useMemo(
+    () => new Map(present.map((entry) => [entry.record.personId, entry])),
+    [present],
+  );
 
   const matches = useMemo(() => {
     if (!needle) return [];
-    return notPresent
-      .filter((person) =>
-        normalise(
-          `${person.firstName} ${person.lastName} ${person.phone ?? ""} ${person.member?.reference ?? ""}`,
-        ).includes(needle),
-      )
+    return people
+      .filter((person) => matchesPersonQuery(person, needle))
       .slice(0, MAX_RESULTS);
-  }, [notPresent, needle]);
+  }, [people, needle]);
+
+  const everyoneHere = people.length > 0 && people.every((person) => hereByPerson.has(person.id));
 
   const checkIn = (person: Person) => {
     onCheckIn(person);
@@ -77,7 +94,26 @@ export function CheckInSearch({ notPresent, onCheckIn }: CheckInSearchProps) {
       {needle ? (
         matches.length ? (
           <ul className="divide-y overflow-hidden rounded-3xl border bg-card" aria-label="People who match">
-            {matches.map((person) => (
+            {matches.map((person) => {
+              const here = hereByPerson.get(person.id);
+              return here ? (
+                <li key={person.id} className="flex min-h-16 items-center gap-3 py-2 pr-2 pl-5">
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-lg font-medium">{displayName(person)}</span>
+                    <span className="block text-sm text-muted-foreground">Already here</span>
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="lg"
+                    className="shrink-0 rounded-full px-3 text-muted-foreground"
+                    onClick={() => onUndo(here)}
+                    aria-label={`Undo check-in for ${displayName(person)}`}
+                  >
+                    <Undo2Icon />
+                    Undo
+                  </Button>
+                </li>
+              ) : (
               <li key={person.id}>
                 <button
                   type="button"
@@ -97,7 +133,8 @@ export function CheckInSearch({ notPresent, onCheckIn }: CheckInSearchProps) {
                   </span>
                 </button>
               </li>
-            ))}
+              );
+            })}
           </ul>
         ) : (
           <div className="space-y-3 rounded-3xl bg-muted px-5 py-5">
@@ -105,13 +142,13 @@ export function CheckInSearch({ notPresent, onCheckIn }: CheckInSearchProps) {
               Nobody called “{search.trim()}” yet. If they’re new, welcome them and they’ll be on the
               list next time.
             </p>
-            <LinkButton variant="outline" size="lg" href="/visitors/quick" className="rounded-full bg-background">
+            <WelcomeButton variant="outline" size="lg" sessionId={sessionId} className="rounded-full bg-background">
               <UserPlusIcon />
               Welcome someone new
-            </LinkButton>
+            </WelcomeButton>
           </div>
         )
-      ) : notPresent.length === 0 ? (
+      ) : everyoneHere ? (
         <p className="rounded-2xl bg-muted px-5 py-4 text-muted-foreground">Everyone we know is already here.</p>
       ) : null}
     </div>

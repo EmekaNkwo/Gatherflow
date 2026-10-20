@@ -1,12 +1,14 @@
 "use client";
 
+import { showFormError } from "@/lib/form-toast";
 import { useState, type FormEvent } from "react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { AUTH_INPUT, AUTH_PRIMARY, AuthLink, AuthShell } from "@/components/auth/auth-shell";
 import { authClient } from "@/lib/auth-client";
+import { useCooldown } from "@/hooks/useCooldown";
+import { DEFAULT_RETRY_SECONDS, notifyRateLimited, retryAfterCapture, tryAgainIn } from "@/lib/rate-limit";
 
 /**
  * Creating an account and a church in one go.
@@ -16,23 +18,34 @@ import { authClient } from "@/lib/auth-client";
  * If the second fails the account still exists, and `/onboarding` lets the
  * person try the church again rather than leaving them stuck.
  */
+/** What went wrong, as a toast: the server"s words, then what to do next. */
+function showError(message: string): void {
+  showFormError("Could not create the account", message, "If you already have an account with this email, sign in instead.");
+}
+
 export default function SignUpPage() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [churchName, setChurchName] = useState("");
-  const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const cooldown = useCooldown();
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitting(true);
-    setError(null);
 
-    const signedUp = await authClient.signUp.email({ name, email, password });
+    const retry = retryAfterCapture();
+    const signedUp = await authClient.signUp.email({ name, email, password, fetchOptions: retry.fetchOptions });
     if (signedUp.error) {
-      setError(signedUp.error.message ?? "The account could not be created.");
       setSubmitting(false);
+      if (signedUp.error.status === 429) {
+        const seconds = retry.seconds() ?? DEFAULT_RETRY_SECONDS;
+        cooldown.start(seconds);
+        notifyRateLimited(seconds);
+        return;
+      }
+      showError(signedUp.error.message ?? "The account could not be created.");
       return;
     }
 
@@ -114,25 +127,13 @@ export default function SignUpPage() {
             <FieldDescription>At least 12 characters. A short phrase you will remember works well.</FieldDescription>
           </Field>
 
-          {error ? (
-            <Alert variant="destructive">
-              <AlertTitle>Could not create the account</AlertTitle>
-              <AlertDescription>
-                <span className="block">{error}</span>
-                <span className="block">
-                  If you already have an account with this email, sign in instead.
-                </span>
-              </AlertDescription>
-            </Alert>
-          ) : null}
-
           <Button
             type="submit"
             size="lg"
             className={AUTH_PRIMARY}
-            disabled={submitting || !name || !email || password.length < 12 || churchName.trim().length < 2}
+            disabled={submitting || cooldown.active || !name || !email || password.length < 12 || churchName.trim().length < 2}
           >
-            {submitting ? "Creating…" : "Create church"}
+            {cooldown.active ? tryAgainIn(cooldown.remaining) : submitting ? "Creating…" : "Create church"}
           </Button>
         </FieldGroup>
       </form>

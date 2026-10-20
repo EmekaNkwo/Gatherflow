@@ -1,20 +1,20 @@
 "use client";
 
+import { showFormError } from "@/lib/form-toast";
+import { toast } from "sonner";
 import { use, useEffect, useState } from "react";
-import { useForm, useWatch } from "react-hook-form";
+import { Controller, useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Field,
-  FieldDescription,
   FieldError,
   FieldGroup,
   FieldLabel,
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { SelectField } from "@/components/shared/select-field";
 import { AUTH_INPUT, AUTH_PRIMARY } from "@/components/auth/auth-shell";
 import { WelcomeShell, WelcomeThanks } from "@/components/auth/welcome-shell";
 import { CONTACT_METHODS, CONTACT_METHOD_LABELS } from "@/types/common";
@@ -22,6 +22,11 @@ import {
   selfRegistrationSchema,
   type SelfRegistrationValues,
 } from "@/services/visitors/schema";
+
+const CONTACT_METHOD_OPTIONS = CONTACT_METHODS.map((method) => ({
+  value: method,
+  label: CONTACT_METHOD_LABELS[method],
+}));
 
 /**
  * The public welcome page, reached from a QR code on a welcome card — on the
@@ -32,6 +37,11 @@ import {
  * about anybody else. The only thing it knows is the church's name, and the
  * only thing it does is post a registration to the church.
  */
+/** What went wrong, as a toast: the server"s words, then what to do next. */
+function showError(message: string): void {
+  showFormError("Not saved yet", message);
+}
+
 export default function ConnectPage({ params }: { params: Promise<{ churchId: string }> }) {
   const { churchId } = use(params);
   const [churchName, setChurchName] = useState<string | null>(null);
@@ -42,10 +52,16 @@ export default function ConnectPage({ params }: { params: Promise<{ churchId: st
     void fetch(`/api/public/church/${encodeURIComponent(churchId)}`, { signal: controller.signal })
       .then(async (response) => {
         const envelope = (await response.json()) as { ok: boolean; data?: { name: string } };
+        if (controller.signal.aborted) return;
         if (envelope.ok && envelope.data) setChurchName(envelope.data.name);
         else setInvalid(true);
       })
-      .catch(() => setInvalid(true));
+      .catch(() => {
+        // Leaving the page (or React mounting it twice in development)
+        // cancels the request; that says nothing about the link.
+        if (controller.signal.aborted) return;
+        setInvalid(true);
+      });
     return () => controller.abort();
   }, [churchId]);
 
@@ -84,7 +100,6 @@ export default function ConnectPage({ params }: { params: Promise<{ churchId: st
 
 function ConnectForm({ churchId, churchName }: { churchId: string; churchName: string }) {
   const [done, setDone] = useState<{ firstName: string; contacted: boolean } | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   const form = useForm<SelfRegistrationValues>({
     resolver: zodResolver(selfRegistrationSchema),
@@ -103,15 +118,24 @@ function ConnectForm({ churchId, churchName }: { churchId: string; churchName: s
   const errors = form.formState.errors;
 
   const onSubmit = form.handleSubmit(async (values) => {
-    setError(null);
-    const response = await fetch("/api/public/connect", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ churchId, ...values, website: "" }),
-    });
-    const envelope = (await response.json()) as { ok: boolean; error?: string };
-    if (envelope.ok) setDone({ firstName: values.firstName.trim(), contacted: values.permissionGranted });
-    else setError(envelope.error ?? "Your details could not be saved. Please tell the welcome desk.");
+    let envelope: { ok: boolean; error?: string };
+    try {
+      const response = await fetch("/api/public/connect", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ churchId, ...values, website: "" }),
+      });
+      envelope = (await response.json()) as { ok: boolean; error?: string };
+    } catch {
+      showError("We couldn't reach the church just now. Check your connection and try again.");
+      return;
+    }
+    if (envelope.ok) {
+      setDone({ firstName: values.firstName.trim(), contacted: values.permissionGranted });
+      toast.success("Your details are saved");
+    } else {
+      showError(envelope.error ?? "Your details could not be saved. Please tell the welcome desk.");
+    }
   });
 
   if (done) {
@@ -141,12 +165,6 @@ function ConnectForm({ churchId, churchName }: { churchId: string; churchName: s
       </section>
 
       <form onSubmit={onSubmit} className="space-y-6" noValidate>
-        {error ? (
-          <Alert variant="destructive">
-            <AlertTitle>Not saved yet</AlertTitle>
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        ) : null}
 
         <FieldGroup className="gap-4 sm:grid sm:grid-cols-2">
           <Field>
@@ -212,17 +230,22 @@ function ConnectForm({ churchId, churchName }: { churchId: string; churchName: s
           </label>
 
           {watched.permissionGranted ? (
-            <Field>
-              <FieldLabel htmlFor="connect-method">The best way to reach you</FieldLabel>
-              <NativeSelect className="w-full [&>select]:h-12 [&>select]:text-base" id="connect-method" {...form.register("preferredMethod")}>
-                {CONTACT_METHODS.map((method) => (
-                  <NativeSelectOption key={method} value={method}>
-                    {CONTACT_METHOD_LABELS[method]}
-                  </NativeSelectOption>
-                ))}
-              </NativeSelect>
-              <FieldDescription>We&apos;ll only use the details you gave above.</FieldDescription>
-            </Field>
+            <Controller
+              control={form.control}
+              name="preferredMethod"
+              render={({ field, fieldState }) => (
+                <SelectField
+                  id="connect-method"
+                  label="The best way to reach you"
+                  description="We'll only use the details you gave above."
+                  triggerClassName="min-h-12"
+                  value={field.value ?? ""}
+                  onValueChange={field.onChange}
+                  error={fieldState.error?.message}
+                  options={CONTACT_METHOD_OPTIONS}
+                />
+              )}
+            />
           ) : null}
         </div>
 

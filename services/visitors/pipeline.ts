@@ -8,6 +8,7 @@ import type { ChurchSnapshot } from "@/types/snapshot";
 import type { CommandContext } from "../core/context";
 import { result, type CommandResult, type DomainEvent } from "../core/events";
 import { activity, findPerson, patch, withActivity, withPerson } from "../core/snapshot";
+import { plainStageName } from "./stage-names";
 
 /** Stages, in configured order. */
 export function orderedStages(settings: ChurchSettings): readonly PipelineStage[] {
@@ -27,6 +28,23 @@ export function stageOrder(settings: ChurchSettings, stageId: string): number {
 
 export function isTerminalStage(settings: ChurchSettings, stageId: string): boolean {
   return findStage(settings, stageId)?.kind === "terminal";
+}
+
+/**
+ * A visitor nobody has been asked to welcome yet. Somebody already settled
+ * in, or whose follow-up has stopped, does not need anyone assigned. The one
+ * definition behind the dashboard figure, the list it links to, and the
+ * "needs a decision" item, so the three can never disagree.
+ */
+export function isAwaitingAssignment(settings: ChurchSettings, person: Person): boolean {
+  const visitor = person.visitor;
+  return (
+    visitor !== undefined &&
+    !person.member &&
+    !visitor.assignedTo &&
+    !visitor.closure &&
+    !isTerminalStage(settings, visitor.stageId)
+  );
 }
 
 /**
@@ -70,6 +88,21 @@ export function setStage(
   const stage = findStage(snapshot.settings, stageId);
   if (!stage) return err("That pipeline stage no longer exists.", "not_found");
   if (person.visitor.stageId === stageId) return err("Already in that stage.", "unchanged");
+  // Stopping follow-up records a reason and cancels open tasks, so it has
+  // its own command; a plain move would leave tasks running for somebody
+  // marked as stopped.
+  if (stageId === closureStage(snapshot.settings)?.id) {
+    return err(
+      `Use "Stop following up" for ${displayName(person)}, so the reason is recorded and open follow-ups are cancelled.`,
+      "invalid",
+    );
+  }
+  if (person.visitor.closure) {
+    return err(
+      `Follow-up for ${displayName(person)} has stopped. Reopen it first.`,
+      "closed",
+    );
+  }
 
   const next = withPerson(
     snapshot,
@@ -92,12 +125,13 @@ export function setStage(
           type: "visitor.stage_changed",
           category: "visitor",
           personId,
-          summary: `${displayName(person)} moved to "${stage.name}".`,
+          summary: `${displayName(person)} moved to "${plainStageName(stage)}".`,
           meta: { stageId },
         }),
       ]),
       events,
-      [`${displayName(person)} moved to ${stage.name}.`],
+      // The same words as the board column it lands in.
+      [`${displayName(person)} moved to ${plainStageName(stage)}.`],
     ),
   );
 }
@@ -115,6 +149,25 @@ export function assignVisitor(
   if (assigneeId && !member) return err("That team member no longer exists.", "not_found");
   if (member && !member.active) {
     return err(`${member.name} is marked as inactive and cannot take new follow-ups.`, "inactive");
+  }
+  if (person.visitor.assignedTo === assigneeId) {
+    return err(
+      member
+        ? `${displayName(person)} is already looked after by ${member.name}.`
+        : `${displayName(person)} isn't assigned to anyone.`,
+      "unchanged",
+    );
+  }
+  // Unassigning is always allowed; giving somebody new work for a person
+  // who asked not to be contacted, or whose follow-up has stopped, is not.
+  if (assigneeId && person.contact.optedOut) {
+    return err(`${displayName(person)} has asked not to be contacted.`, "opted_out");
+  }
+  if (assigneeId && person.visitor.closure) {
+    return err(
+      `Follow-up for ${displayName(person)} has stopped. Reopen it before assigning someone.`,
+      "closed",
+    );
   }
 
   let next = withPerson(
@@ -275,6 +328,84 @@ export function closeFollowUp(
           ? [`${cancelled.length} open task${cancelled.length === 1 ? "" : "s"} cancelled.`]
           : []),
       ],
+    ),
+  );
+}
+
+export interface ReopenFollowUpInput {
+  personId: PersonId;
+  /** An active stage to resume in; otherwise one is chosen from their history. */
+  stageId?: string;
+}
+
+/** Where a reopened visitor resumes: as far as they had actually got. */
+function resumeStage(settings: ChurchSettings, person: Person): PipelineStage | undefined {
+  const active = orderedStages(settings).filter((stage) => stage.kind === "active");
+  const preferred = person.visitor?.lastContactAt
+    ? "contacted"
+    : person.visitor?.assignedTo
+      ? "contact_pending"
+      : undefined;
+  return active.find((stage) => stage.id === preferred) ?? active[0];
+}
+
+/**
+ * Undoes a stop, or a move into a final stage made by mistake: clears the
+ * closure and puts the visitor back in an active stage. Open tasks cancelled
+ * at closure stay cancelled; whoever reopens decides the next step.
+ */
+export function reopenFollowUp(
+  snapshot: ChurchSnapshot,
+  input: ReopenFollowUpInput,
+  ctx: CommandContext,
+): Result<CommandResult> {
+  const person = findPerson(snapshot, input.personId);
+  if (!person?.visitor) return err("That visitor record no longer exists.", "not_found");
+  if (person.member) return err(`${displayName(person)} is now a member.`, "invalid");
+
+  const visitor = person.visitor;
+  if (!visitor.closure && !isTerminalStage(snapshot.settings, visitor.stageId)) {
+    return err(`Follow-up for ${displayName(person)} is already open.`, "unchanged");
+  }
+  if (person.contact.optedOut) {
+    return err(
+      `${displayName(person)} asked not to be contacted. Change their contact preferences first.`,
+      "opted_out",
+    );
+  }
+
+  const requested = input.stageId ? findStage(snapshot.settings, input.stageId) : undefined;
+  if (input.stageId && (!requested || requested.kind !== "active")) {
+    return err("Choose a stage that is still in progress.", "invalid");
+  }
+  const stage = requested ?? resumeStage(snapshot.settings, person);
+  if (!stage) return err("There is no active stage to reopen into.", "invalid");
+
+  const next = withPerson(
+    snapshot,
+    input.personId,
+    (entry) => ({
+      ...entry,
+      visitor: entry.visitor
+        ? { ...entry.visitor, stageId: stage.id, stageUpdatedAt: ctx.nowIso, closure: undefined }
+        : entry.visitor,
+    }),
+    ctx,
+  );
+
+  return ok(
+    result(
+      withActivity(next, ctx, [
+        activity(ctx, {
+          type: "visitor.reopened",
+          category: "visitor",
+          personId: input.personId,
+          summary: `Follow-up for ${displayName(person)} reopened in "${plainStageName(stage)}".`,
+          meta: { stageId: stage.id },
+        }),
+      ]),
+      [{ type: "visitor.stage_changed", personId: input.personId, stageId: stage.id }],
+      [`Follow-up for ${displayName(person)} reopened. Decide the next step.`],
     ),
   );
 }

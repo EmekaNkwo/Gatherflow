@@ -100,5 +100,9 @@ describe("what an audit entry keeps", () => {
     expect(targetOf("string")).toBeNull();
     expect(targetOf(null)).toBeNull();
     expect(targetOf({ personId: 42 })).toBeNull();
+    // Rule and team-member edits name their subject `id` (M10).
+    expect(targetOf({ id: "first_visit_welcome", changes: { enabled: false } })).toBe("first_visit_welcome");
+    expect(targetOf({ id: "tm_vol_tunde", name: "Tunde", role: "volunteer" })).toBe("tm_vol_tunde");
+    expect(targetOf({ fromTeamMemberId: "tm_a", toTeamMemberId: "tm_b" })).toBe("tm_a");
   });
 });

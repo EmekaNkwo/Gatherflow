@@ -2,10 +2,12 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
+import { Field, FieldDescription, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { useChurchSettings } from "@/hooks/useChurchSettings";
+import { DEFAULT_COUNTRY_CALLING_CODE, isCallingCode } from "@/lib/phone";
+import { checkDueInDays, DUE_IN_DAYS_MAX, DUE_IN_DAYS_MIN } from "@/services/settings/due-in-days";
 import { EmailDeliveryCard } from "./email-delivery-card";
 import { DisclosureButton, SettingsPanel } from "./settings-panel";
 
@@ -23,38 +25,107 @@ export function ChurchSettings({ settings }: { settings: ChurchSettings }) {
   );
 }
 
+/** Mirrors the server's limit on a name. */
+const CHURCH_NAME_MAX_LENGTH = 80;
+
 function ProfileForm({ settings }: { settings: ChurchSettings }) {
   const [churchName, setChurchName] = useState(settings.settings.churchName);
-  const [dueInDays, setDueInDays] = useState(settings.settings.defaultFollowUpDueInDays);
+  // Kept as typed: an empty box is a missing answer, not 0 ("due today").
+  const [dueInDays, setDueInDays] = useState(String(settings.settings.defaultFollowUpDueInDays));
+  const [callingCode, setCallingCode] = useState(
+    `+${settings.settings.defaultCountryCallingCode ?? DEFAULT_COUNTRY_CALLING_CODE}`,
+  );
+  const [problems, setProblems] = useState<{ name?: string; due?: string; code?: string }>({});
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    if (saving) return;
+    const due = checkDueInDays(dueInDays);
+    const code = callingCode.trim().replace(/^\+/, "");
+    const found = {
+      name: churchName.trim() ? undefined : "Give the church a name.",
+      due: due.ok ? undefined : due.error,
+      code: isCallingCode(code) ? undefined : "Use one to three digits, such as +44 or +234.",
+    };
+    setProblems(found);
+    if (found.name || found.due || found.code || !due.ok) return;
+    setSaving(true);
+    await settings.saveProfile({
+      churchName: churchName.trim(),
+      defaultFollowUpDueInDays: due.value,
+      defaultCountryCallingCode: code,
+    });
+    setSaving(false);
+  }
 
   return (
-    <SettingsPanel title="Your church" description="The name appears in messages and at the top of pages.">
+    <SettingsPanel title="Your church" description="The name appears in messages, invitations, the welcome page and at the top of pages.">
       <form
         className="space-y-4"
+        noValidate
         onSubmit={(event) => {
           event.preventDefault();
-          settings.saveProfile({ churchName, defaultFollowUpDueInDays: dueInDays });
+          void save();
         }}
       >
-        <Field className="max-w-md">
+        <Field className="max-w-md" data-invalid={problems.name ? true : undefined}>
           <FieldLabel htmlFor="church-name">Church name</FieldLabel>
-          <Input id="church-name" className="h-11" value={churchName} onChange={(event) => setChurchName(event.target.value)} />
+          <Input
+            id="church-name"
+            className="h-11"
+            value={churchName}
+            maxLength={CHURCH_NAME_MAX_LENGTH}
+            aria-invalid={problems.name ? true : undefined}
+            onChange={(event) => setChurchName(event.target.value)}
+          />
+          {problems.name ? (
+            <FieldError>{problems.name}</FieldError>
+          ) : (
+            <FieldDescription>
+              {churchName.length} of {CHURCH_NAME_MAX_LENGTH} characters.
+            </FieldDescription>
+          )}
         </Field>
-        <Field className="max-w-xs">
+        <Field className="max-w-xs" data-invalid={problems.due ? true : undefined}>
           <FieldLabel htmlFor="default-due">New follow-ups are due in (days)</FieldLabel>
           <Input
             id="default-due"
             type="number"
-            min={0}
-            max={90}
+            inputMode="numeric"
+            min={DUE_IN_DAYS_MIN}
+            max={DUE_IN_DAYS_MAX}
             className="h-11"
             value={dueInDays}
-            onChange={(event) => setDueInDays(Number(event.target.value))}
+            aria-invalid={problems.due ? true : undefined}
+            onChange={(event) => setDueInDays(event.target.value)}
           />
-          <FieldDescription>For follow-ups someone adds by hand.</FieldDescription>
+          {problems.due ? (
+            <FieldError>{problems.due}</FieldError>
+          ) : (
+            <FieldDescription>For follow-ups someone adds by hand. 0 means the same day.</FieldDescription>
+          )}
         </Field>
-        <Button type="submit" size="lg" className="rounded-full">
-          Save
+        <Field className="max-w-xs" data-invalid={problems.code ? true : undefined}>
+          <FieldLabel htmlFor="calling-code">Country calling code</FieldLabel>
+          <Input
+            id="calling-code"
+            className="h-11"
+            inputMode="tel"
+            maxLength={4}
+            value={callingCode}
+            aria-invalid={problems.code ? true : undefined}
+            onChange={(event) => setCallingCode(event.target.value)}
+          />
+          {problems.code ? (
+            <FieldError>{problems.code}</FieldError>
+          ) : (
+            <FieldDescription>
+              Used for phone numbers saved without one, such as 07700 900123, so WhatsApp reaches the right person.
+            </FieldDescription>
+          )}
+        </Field>
+        <Button type="submit" size="lg" className="rounded-full" disabled={saving}>
+          {saving ? "Saving…" : "Save"}
         </Button>
       </form>
     </SettingsPanel>
@@ -62,30 +133,40 @@ function ProfileForm({ settings }: { settings: ChurchSettings }) {
 }
 
 function ServicesPanel({ settings }: { settings: ChurchSettings }) {
+  const running = settings.services.filter((service) => service.active).length;
   return (
-    <SettingsPanel title="Services" description="Your weekly pattern. Switch off a service you no longer hold.">
+    <SettingsPanel
+      title="Services"
+      description="Your usual weekly pattern, which a new church starts with as a suggestion. Switch off any you don't hold. Each service still needs adding for a date in Check-in."
+    >
       <ul className="-mx-5 divide-y border-y md:-mx-6">
-        {settings.services.map((service) => (
-          <li key={service.id} className="flex min-h-14 items-center justify-between gap-3 px-5 py-3 md:px-6">
-            <div>
-              <p className="font-medium">{service.name}</p>
-              <p className="text-sm text-muted-foreground">
-                {service.weekday.charAt(0).toUpperCase() + service.weekday.slice(1)} at {service.time}
-              </p>
-            </div>
-            <Switch
-              checked={service.active}
-              onCheckedChange={(checked) =>
-                settings.saveServices(
-                  settings.services.map((entry) =>
-                    entry.id === service.id ? { ...entry, active: checked === true } : entry,
-                  ),
-                )
-              }
-              aria-label={`${service.name} active`}
-            />
-          </li>
-        ))}
+        {settings.services.map((service) => {
+          // At least one service stays on, so check-in always has a pattern to offer.
+          const lastRunning = service.active && running === 1;
+          return (
+            <li key={service.id} className="flex min-h-14 items-center justify-between gap-3 px-5 py-3 md:px-6">
+              <div>
+                <p className="font-medium">{service.name}</p>
+                <p className="text-sm text-muted-foreground">
+                  {service.weekday.charAt(0).toUpperCase() + service.weekday.slice(1)} at {service.time}
+                  {lastRunning ? " · keep at least one service on" : ""}
+                </p>
+              </div>
+              <Switch
+                checked={service.active}
+                disabled={lastRunning}
+                onCheckedChange={(checked) =>
+                  settings.saveServices(
+                    settings.services.map((entry) =>
+                      entry.id === service.id ? { ...entry, active: checked === true } : entry,
+                    ),
+                  )
+                }
+                aria-label={`${service.name} active`}
+              />
+            </li>
+          );
+        })}
       </ul>
     </SettingsPanel>
   );

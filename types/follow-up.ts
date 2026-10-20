@@ -15,7 +15,12 @@ export type FollowUpTaskType =
   | "group_invitation"
   | "membership_orientation"
   | "pastoral_contact"
-  | "post_event_follow_up";
+  | "post_event_follow_up"
+  /**
+   * Saying hello face to face at the next service. The one kind of follow-up
+   * that needs no permission to contact, because nobody is messaged.
+   */
+  | "say_hello";
 
 export const FOLLOW_UP_TASK_TYPES: readonly FollowUpTaskType[] = [
   "welcome_message",
@@ -26,6 +31,7 @@ export const FOLLOW_UP_TASK_TYPES: readonly FollowUpTaskType[] = [
   "membership_orientation",
   "pastoral_contact",
   "post_event_follow_up",
+  "say_hello",
 ];
 
 export const FOLLOW_UP_TASK_TYPE_LABELS: Record<FollowUpTaskType, string> = {
@@ -37,6 +43,7 @@ export const FOLLOW_UP_TASK_TYPE_LABELS: Record<FollowUpTaskType, string> = {
   membership_orientation: "Membership orientation",
   pastoral_contact: "Pastoral-care contact",
   post_event_follow_up: "Follow-up after an event",
+  say_hello: "Say hello in person",
 };
 
 export type TaskStatus =

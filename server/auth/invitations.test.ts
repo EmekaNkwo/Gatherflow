@@ -92,14 +92,14 @@ describe.skipIf(!CONNECTION)("churches and invitations", { timeout: 60_000 }, ()
 
     const invited = await createInvitation(db, {
       churchId,
-      email: "Volunteer-Invited@Example.com",
+      email: `Volunteer-Invited-${process.pid}@Example.com`,
       role: "volunteer",
       invitedBy: founder.userId,
     });
     expect(invited.ok).toBe(true);
     if (!invited.ok) return;
     expect((await listInvitations(db, churchId)).map((entry) => entry.email)).toEqual([
-      "volunteer-invited@example.com",
+      `volunteer-invited-${process.pid}@example.com`,
     ]);
 
     // Somebody else holding the link cannot use it.
@@ -109,7 +109,9 @@ describe.skipIf(!CONNECTION)("churches and invitations", { timeout: 60_000 }, ()
     if (!wrong.ok) expect(wrong.code).toBe("wrong_account");
 
     // The person it was sent to can, and becomes a team member in that role.
-    const email = "volunteer-invited@example.com";
+    // Unique per run, like every other account here: email addresses are
+    // unique across the whole database, and two runs can overlap.
+    const email = `volunteer-invited-${process.pid}@example.com`;
     await getAuth().api.signUpEmail({
       body: { email, password: "correct-horse-battery-staple", name: "Vol Unteer" },
     });
@@ -141,6 +143,81 @@ describe.skipIf(!CONNECTION)("churches and invitations", { timeout: 60_000 }, ()
     expect(await listInvitations(db, churchId)).toEqual([]);
   });
 
+  it("refuses a second open invitation, an existing member, and an already linked team member (M8)", async () => {
+    const founder = await account("dupes");
+    const { churchId, teamMemberId } = await createChurchForUser(db, {
+      userId: founder.userId,
+      userName: founder.name,
+      churchName: "Duplicate Church",
+    });
+    createdChurches.push(churchId);
+
+    const email = `dupe-${process.pid}@example.com`;
+    const first = await createInvitation(db, { churchId, email, role: "volunteer", invitedBy: founder.userId });
+    expect(first.ok).toBe(true);
+
+    const second = await createInvitation(db, { churchId, email: email.toUpperCase(), role: "administrator", invitedBy: founder.userId });
+    expect(second).toMatchObject({ ok: false, code: "duplicate" });
+
+    const existing = await createInvitation(db, { churchId, email: founder.email, role: "pastor", invitedBy: founder.userId });
+    expect(existing).toMatchObject({ ok: false, code: "already_member" });
+
+    const linkedToFounder = await createInvitation(db, {
+      churchId,
+      email: `other-${process.pid}@example.com`,
+      role: "pastor",
+      teamMemberId,
+      invitedBy: founder.userId,
+    });
+    expect(linkedToFounder).toMatchObject({ ok: false, code: "duplicate" });
+
+    // Withdrawn, the address can be invited again.
+    if (first.ok) await revokeInvitation(db, churchId, first.value.invitation.id);
+    expect((await createInvitation(db, { churchId, email, role: "pastor", invitedBy: founder.userId })).ok).toBe(true);
+  });
+
+  it("gives an existing team member the invited role and switches them back on at accept (M8)", async () => {
+    const founder = await account("relinker");
+    const { churchId } = await createChurchForUser(db, {
+      userId: founder.userId,
+      userName: founder.name,
+      churchName: "Relink Church",
+    });
+    createdChurches.push(churchId);
+
+    // A team member who exists without an account: a volunteer, switched off.
+    const repository = createPostgresSnapshotRepository({
+      db,
+      churchId,
+      createSeed: () => {
+        throw new Error("must not seed");
+      },
+    });
+    const loaded = await repository.load(FULL_SCOPE);
+    const volunteer = { id: `tm_relink_${process.pid}`, name: "Tunde B", role: "volunteer" as const, active: false, createdAt: new Date().toISOString() };
+    const saved = await repository.save(loaded.snapshot, { ...loaded.snapshot, team: [...loaded.snapshot.team, volunteer] }, loaded.version);
+    expect(saved.ok).toBe(true);
+
+    const invitee = await account("relinked");
+    const invited = await createInvitation(db, {
+      churchId,
+      email: invitee.email,
+      role: "follow_up_coordinator",
+      teamMemberId: volunteer.id,
+      invitedBy: founder.userId,
+    });
+    if (!invited.ok) throw new Error(invited.error);
+
+    const accepted = await acceptInvitation(db, invited.value.token, invitee);
+    expect(accepted).toMatchObject({ ok: true, value: { teamMemberId: volunteer.id, role: "follow_up_coordinator" } });
+
+    const after = await repository.load(FULL_SCOPE);
+    expect(after.snapshot.team.find((member) => member.id === volunteer.id)).toMatchObject({
+      role: "follow_up_coordinator",
+      active: true,
+    });
+  });
+
   it("can be withdrawn, refuses the member role, and rejects an unknown token", async () => {
     const founder = await account("revoker");
     const { churchId } = await createChurchForUser(db, {
@@ -152,7 +229,7 @@ describe.skipIf(!CONNECTION)("churches and invitations", { timeout: 60_000 }, ()
 
     const invited = await createInvitation(db, { churchId, email: "x@example.com", role: "pastor", invitedBy: founder.userId });
     if (!invited.ok) throw new Error(invited.error);
-    expect(await revokeInvitation(db, churchId, invited.value.invitation.id)).toBe(true);
+    expect(await revokeInvitation(db, churchId, invited.value.invitation.id)).toEqual({ email: "x@example.com", role: "pastor" });
     expect((await findOpenInvitation(db, invited.value.token)).ok).toBe(false);
 
     const member = await createInvitation(db, { churchId, email: "m@example.com", role: "member", invitedBy: founder.userId });

@@ -1,7 +1,7 @@
 "use client";
 
+import { showFormError } from "@/lib/form-toast";
 import { useState, type FormEvent } from "react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -12,15 +12,18 @@ import { AUTH_INPUT, AUTH_PRIMARY, AuthShell } from "@/components/auth/auth-shel
  * invitation link somebody sent. Nothing else is possible from here, by
  * design — a church is not something a stranger can join by asking.
  */
+/** What went wrong, as a toast: the server"s words, then what to do next. */
+function showError(message: string): void {
+  showFormError("Could not create the church", message, "Check the name and try again.");
+}
+
 export default function OnboardingPage() {
   const [churchName, setChurchName] = useState("");
-  const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitting(true);
-    setError(null);
     const response = await fetch("/api/churches", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -33,7 +36,7 @@ export default function OnboardingPage() {
         window.location.assign("/sign-in?next=/onboarding");
         return;
       }
-      setError(envelope.error ?? "The church could not be created.");
+      showError(envelope.error ?? "The church could not be created.");
       setSubmitting(false);
       return;
     }
@@ -61,16 +64,6 @@ export default function OnboardingPage() {
             />
             <FieldDescription>You can change it later in Settings.</FieldDescription>
           </Field>
-
-          {error ? (
-            <Alert variant="destructive">
-              <AlertTitle>Could not create the church</AlertTitle>
-              <AlertDescription>
-                <span className="block">{error}</span>
-                <span className="block">Check the name and try again.</span>
-              </AlertDescription>
-            </Alert>
-          ) : null}
 
           <Button type="submit" size="lg" className={AUTH_PRIMARY} disabled={submitting || churchName.trim().length < 2}>
             {submitting ? "Creating…" : "Create church"}

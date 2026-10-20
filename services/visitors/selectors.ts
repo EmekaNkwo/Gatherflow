@@ -1,7 +1,7 @@
 import { toIsoDate } from "@/lib/dates";
 import { plainStageName } from "./stage-names";
 import type { CsvColumn } from "@/lib/csv";
-import { normalise } from "@/lib/strings";
+import { matchesPersonQuery } from "@/lib/person-search";
 import type { ContactMethod, IsoDate, StageId, TeamMemberId } from "@/types/common";
 import { CONTACT_METHOD_LABELS } from "@/types/common";
 import type { FollowUpTask, PipelineStage } from "@/types/follow-up";
@@ -9,7 +9,11 @@ import { CLOSURE_REASON_LABELS, VISITOR_SOURCE_LABELS, type Person } from "@/typ
 import type { ChurchSnapshot } from "@/types/snapshot";
 import { isOpen } from "../follow-ups/tasks";
 import { isOverdue } from "../follow-ups/selectors";
-import { lastAttendanceDate, presentVisitCount } from "../analytics/attendance";
+import { lastAttendanceDate } from "../analytics/attendance";
+import { visitIndex } from "../attendance/visits";
+import { isAwaitingAssignment, isTerminalStage } from "./pipeline";
+import { visitSummary } from "../attendance/visits";
+import type { ChurchSettings } from "@/types/settings";
 
 /** One row of the visitor directory, with everything the table needs. */
 export interface VisitorRow {
@@ -32,6 +36,7 @@ export interface VisitorRow {
 export type VisitorFilter =
   | "all"
   | "first_time"
+  | "first_time_this_month"
   | "returning"
   | "awaiting_assignment"
   | "awaiting_contact"
@@ -40,11 +45,13 @@ export type VisitorFilter =
   | "awaiting_second_visit"
   | "awaiting_orientation"
   | "contact_declined"
-  | "became_member";
+  | "became_member"
+  | "no_next_step";
 
 export const VISITOR_FILTER_LABELS: Record<VisitorFilter, string> = {
   all: "All visitors",
   first_time: "First-time visitors",
+  first_time_this_month: "First came this month",
   returning: "Returning visitors",
   awaiting_assignment: "Awaiting assignment",
   awaiting_contact: "Awaiting contact",
@@ -54,7 +61,49 @@ export const VISITOR_FILTER_LABELS: Record<VisitorFilter, string> = {
   awaiting_orientation: "Awaiting membership orientation",
   contact_declined: "Contact declined",
   became_member: "Became a member",
+  no_next_step: "No next step",
 };
+
+/** The first day of the month `today` falls in. */
+export function monthStartOf(today: IsoDate): IsoDate {
+  return `${today.slice(0, 7)}-01`;
+}
+
+/**
+ * Somebody whose first visit was this calendar month. The first visit is
+ * the earliest one we know of (attendance or the registered visit), and
+ * anyone registered as having been before is not a first-timer. The one
+ * definition behind the dashboard tile, the list it opens and the journey
+ * report, so they always agree.
+ */
+export function firstVisitedThisMonth(snapshot: ChurchSnapshot, person: Person, today: IsoDate): boolean {
+  if (!person.visitor || person.visitor.returningVisitor) return false;
+  const first = visitSummary(snapshot, person.id, { until: today }).firstVisitDate;
+  return Boolean(first) && first! >= monthStartOf(today) && first! <= today;
+}
+
+/**
+ * A visitor still being followed up who has nothing planned: no open task,
+ * not stopped, not settled, and somebody is already looking after them (the
+ * unassigned are counted separately). Without this check a visitor can fall
+ * out of every worklist after an outcome that creates no next step.
+ */
+export function hasNoNextStep(
+  settings: ChurchSettings,
+  person: Person,
+  openTaskCount: number,
+): boolean {
+  const visitor = person.visitor;
+  return (
+    visitor !== undefined &&
+    !person.member &&
+    !visitor.closure &&
+    !person.contact.optedOut &&
+    !isTerminalStage(settings, visitor.stageId) &&
+    !isAwaitingAssignment(settings, person) &&
+    openTaskCount === 0
+  );
+}
 
 export interface VisitorQuery {
   filter?: VisitorFilter;
@@ -68,6 +117,9 @@ export function visitorRows(snapshot: ChurchSnapshot, now: Date): VisitorRow[] {
   const today = toIsoDate(now);
   const stages = new Map(snapshot.settings.pipelineStages.map((stage) => [stage.id, stage]));
   const team = new Map(snapshot.team.map((member) => [member.id, member]));
+  // Visits as check-in counts them (services/attendance/visits.ts): the
+  // registered visit and "they've been before" included, up to today.
+  const visitsOf = visitIndex(snapshot, { until: today });
 
   return snapshot.people
     .filter((person) => person.visitor)
@@ -83,9 +135,9 @@ export function visitorRows(snapshot: ChurchSnapshot, now: Date): VisitorRow[] {
 
       return {
         person,
-        firstVisit: visitor.firstVisitDate,
+        firstVisit: visitsOf(person).firstVisitDate ?? visitor.firstVisitDate,
         lastVisit: lastAttendanceDate(snapshot, person.id),
-        visits: presentVisitCount(snapshot, person.id),
+        visits: visitsOf(person).count,
         stage,
         statusLabel: person.member
           ? "Became a member"
@@ -114,8 +166,9 @@ export function selectVisitors(
   query: VisitorQuery,
   now: Date,
 ): VisitorRow[] {
-  const search = query.search ? normalise(query.search) : "";
+  const search = query.search?.trim() ?? "";
   const filter = query.filter ?? "all";
+  const today = toIsoDate(now);
 
   return visitorRows(snapshot, now).filter((row) => {
     if (query.stageId && row.person.visitor?.stageId !== query.stageId) return false;
@@ -129,24 +182,18 @@ export function selectVisitors(
       return false;
     }
 
-    if (search) {
-      const haystack = normalise(
-        [
-          row.person.firstName,
-          row.person.lastName,
-          row.person.preferredName ?? "",
-          row.person.phone ?? "",
-          row.person.email ?? "",
-        ].join(" "),
-      );
-      if (!haystack.includes(search)) return false;
-    }
+    if (search && !matchesPersonQuery(row.person, search)) return false;
 
-    return matchesFilter(row, filter);
+    return matchesFilter(row, filter, snapshot, today);
   });
 }
 
-function matchesFilter(row: VisitorRow, filter: VisitorFilter): boolean {
+function matchesFilter(
+  row: VisitorRow,
+  filter: VisitorFilter,
+  snapshot: ChurchSnapshot,
+  today: IsoDate,
+): boolean {
   const visitor = row.person.visitor;
   if (!visitor) return false;
 
@@ -155,10 +202,12 @@ function matchesFilter(row: VisitorRow, filter: VisitorFilter): boolean {
       return true;
     case "first_time":
       return row.visits <= 1 && !row.person.member;
+    case "first_time_this_month":
+      return firstVisitedThisMonth(snapshot, row.person, today);
     case "returning":
       return row.visits > 1 && !row.person.member;
     case "awaiting_assignment":
-      return !visitor.assignedTo && !visitor.closure && !row.person.member;
+      return isAwaitingAssignment(snapshot.settings, row.person);
     case "awaiting_contact":
       return !visitor.lastContactAt && !visitor.closure && !row.person.member;
     case "contacted":
@@ -173,6 +222,8 @@ function matchesFilter(row: VisitorRow, filter: VisitorFilter): boolean {
       return row.person.contact.optedOut || visitor.closure?.reason === "contact_declined";
     case "became_member":
       return Boolean(row.person.member);
+    case "no_next_step":
+      return hasNoNextStep(snapshot.settings, row.person, row.openTaskCount);
     default:
       return true;
   }

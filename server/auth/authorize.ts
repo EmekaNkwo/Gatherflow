@@ -1,6 +1,7 @@
 import { can, canViewCare, taskScope } from "@/lib/permissions";
 import { err, ok, type Result } from "@/lib/result";
 import type { Capability } from "@/types/team";
+import type { ChurchSnapshot } from "@/types/snapshot";
 import {
   type LoadScope,
 } from "@/services/repositories/async-snapshot-repository";
@@ -29,6 +30,22 @@ export function authorize(session: ChurchSession, capability: Capability): Resul
     );
   }
   return ok(true);
+}
+
+/**
+ * For a role scoped to its own work: whether this request concerns their own
+ * work. Reads are scoped already, but a request can name any id, so the same
+ * boundary is enforced on what they may change. A role that reads everything
+ * passes; an own-scoped role with no linked team member owns nothing.
+ */
+export function authorizeOwnership(
+  session: ChurchSession,
+  snapshot: ChurchSnapshot,
+  ownedBy: ((snapshot: ChurchSnapshot, teamMemberId: string) => boolean) | undefined,
+): Result<true> {
+  if (!ownedBy || taskScope(session.role) === "all") return ok(true);
+  if (session.teamMemberId && ownedBy(snapshot, session.teamMemberId)) return ok(true);
+  return err("You can only change follow-ups and visitors that are yours.", FORBIDDEN);
 }
 
 /**

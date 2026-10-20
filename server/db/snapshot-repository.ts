@@ -1,4 +1,5 @@
-import { and, eq, sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
+import { withoutRestricted, withoutUnseenTaskActivity } from "@/services/repositories/redact";
 import type { z } from "zod";
 import { err, ok, type Result } from "@/lib/result";
 import {
@@ -41,9 +42,11 @@ import {
  * - **Validation on read.** Every row's `data` is parsed with the same Zod
  *   schema the browser uses. A row that fails is dropped and counted, never
  *   thrown, so one malformed record cannot lock a church out of its own data.
- * - **Only what changed is written.** A commit compares array references and
- *   rewrites just those collections, so registering a visitor does not rewrite
- *   ten weeks of attendance.
+ * - **Only what changed is written.** A commit compares array references to
+ *   find the collections that changed, then record references within them to
+ *   find the rows: a check-in writes one attendance row and one timeline
+ *   entry, not ten weeks of attendance. Short commits are what let a burst of
+ *   check-ins at the door get through the version guard with few retries.
  *
  * Added here, because a shared database makes them necessary:
  *
@@ -199,6 +202,16 @@ function chunk<T>(items: readonly T[], size: number): T[][] {
   return out;
 }
 
+/**
+ * A role without pastoral-care access never receives restricted detail held
+ * inside other records (emergency contacts, restricted timeline entries).
+ * Commands still run against the full church; this applies to what is read.
+ */
+function redactFor(scope: LoadScope, loaded: VersionedSnapshot): VersionedSnapshot {
+  const readable = withoutUnseenTaskActivity(loaded.snapshot);
+  return { ...loaded, snapshot: scope.careRecords ? readable : withoutRestricted(readable) };
+}
+
 export function createPostgresSnapshotRepository({
   db,
   churchId,
@@ -259,11 +272,10 @@ export function createPostgresSnapshotRepository({
     items: readonly { id: string }[],
   ): Promise<void> {
     const table = tableFor[name];
-    // The collection in the snapshot is the authority, so the stored rows are
-    // replaced wholesale. Delete-then-insert mirrors `saveAll` exactly and
-    // cannot leave a removed record behind; it runs inside the commit's
-    // transaction, so no reader sees the gap. A diffing upsert would touch
-    // fewer rows and is where to go if a collection ever grows large.
+    // Used when there is no previous snapshot to compare with (seeding, a
+    // restore): the collection in the snapshot is the authority, so the stored
+    // rows are replaced wholesale. It runs inside the commit's transaction, so
+    // no reader sees the gap. Ordinary commits use `writeChanges`.
     await tx.delete(table).where(eq(table.churchId, churchId));
     if (items.length === 0) return;
 
@@ -272,6 +284,47 @@ export function createPostgresSnapshotRepository({
       await tx
         .insert(table)
         .values(batch.map((item) => mapRow(churchId, item)) as never);
+    }
+  }
+
+  /**
+   * Writes only the rows of one collection that differ between two snapshots:
+   * deletes the ids that went, and upserts the records whose reference
+   * changed. Snapshots are immutable, so an unchanged record is the very same
+   * object and is skipped. `previous` is the full church the version guard
+   * was read with, so it is exactly what the table holds.
+   */
+  async function writeChanges(
+    tx: Database,
+    name: CollectionName,
+    previous: readonly { id: string }[],
+    next: readonly { id: string }[],
+  ): Promise<void> {
+    const table = tableFor[name];
+    const before = new Map(previous.map((item) => [item.id, item]));
+    const kept = new Set(next.map((item) => item.id));
+    const removed = previous.filter((item) => !kept.has(item.id)).map((item) => item.id);
+    const changed = next.filter((item) => before.get(item.id) !== item);
+
+    for (const ids of chunk(removed, INSERT_CHUNK)) {
+      await tx.delete(table).where(and(eq(table.churchId, churchId), inArray(table.id, ids)));
+    }
+    if (changed.length === 0) return;
+
+    const mapRow = promote[name] as (c: string, r: unknown) => Record<string, unknown>;
+    const columns = Object.keys(mapRow(churchId, changed[0])).filter(
+      (key) => key !== "churchId" && key !== "id",
+    );
+    const columnOf = table as unknown as Record<string, { name: string }>;
+    const set = Object.fromEntries(
+      columns.map((key) => [key, sql.raw(`excluded."${columnOf[key].name}"`)]),
+    );
+
+    for (const batch of chunk(changed, INSERT_CHUNK)) {
+      await tx
+        .insert(table)
+        .values(batch.map((item) => mapRow(churchId, item)) as never)
+        .onConflictDoUpdate({ target: [table.churchId, table.id], set } as never);
     }
   }
 
@@ -316,7 +369,7 @@ export function createPostgresSnapshotRepository({
         .from(churches)
         .where(eq(churches.id, churchId));
 
-      if (!church) return seedOrRefuse("does not exist");
+      if (!church) return redactFor(scope, await seedOrRefuse("does not exist"));
 
       const report: LoadReport = { dropped: 0, issues: [] };
 
@@ -376,7 +429,7 @@ export function createPostgresSnapshotRepository({
         loadCollection<ChurchSnapshot["activity"][number]>("activity", report),
       ]);
 
-      return {
+      return redactFor(scope, {
         snapshot: {
           people: loadedPeople,
           settings: settings?.success ? settings.data : createSeed().settings,
@@ -394,7 +447,7 @@ export function createPostgresSnapshotRepository({
         version: church.version,
         seeded: false,
         report,
-      };
+      });
     },
 
     async save(previous, next, expectedVersion, options): Promise<Result<number>> {
@@ -402,9 +455,16 @@ export function createPostgresSnapshotRepository({
         return await db.transaction(async (tx) => {
           // The guard and the increment are the same statement, so two
           // concurrent commits cannot both believe they won.
+          // `churches.name` is what the welcome page, invitations, the church
+          // switcher and reminders read, so a rename lands there in the same
+          // statement that claims the version — never one without the other.
+          const renamed =
+            previous && previous.settings.churchName !== next.settings.churchName
+              ? { name: next.settings.churchName }
+              : {};
           const bumped = await tx
             .update(churches)
-            .set({ version: sql`${churches.version} + 1`, updatedAt: new Date() })
+            .set({ version: sql`${churches.version} + 1`, updatedAt: new Date(), ...renamed })
             .where(and(eq(churches.id, churchId), eq(churches.version, expectedVersion)))
             .returning({ version: churches.version });
 
@@ -421,7 +481,7 @@ export function createPostgresSnapshotRepository({
           } else {
             for (const name of COLLECTIONS) {
               if (previous[name] !== next[name]) {
-                await writeCollection(scoped, name, next[name]);
+                await writeChanges(scoped, name, previous[name], next[name]);
               }
             }
             if (previous.settings !== next.settings) {

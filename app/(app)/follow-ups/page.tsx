@@ -5,10 +5,10 @@ import { useSearchParams } from "next/navigation";
 import { KanbanIcon, ListIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyState, NoResultsState, RestrictedState } from "@/components/shared/empty-state";
 import { PageHeader, PageShell } from "@/components/shared/page-header";
+import { SelectField } from "@/components/shared/select-field";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { PipelineBoard } from "@/components/follow-ups/pipeline-board";
 import { VisitorTable } from "@/components/visitors/visitor-table";
@@ -20,7 +20,8 @@ import {
 import { displayName } from "@/lib/strings";
 import { useRole } from "@/hooks/useRole";
 import { useNow } from "@/hooks/use-now";
-import { useVisitors } from "@/hooks/useVisitors";
+import { useClosedStageId, useVisitorActionGate, useVisitors } from "@/hooks/useVisitors";
+import type { BoardActions } from "@/components/follow-ups/pipeline-board";
 import type { VisitorRow } from "@/services/visitors/selectors";
 
 /**
@@ -52,8 +53,23 @@ export default function FollowUpPipelinePage() {
     [search, assigneeFilter, stageParam],
   );
 
-  const { board: columns, rows, counts, moveToStage, assign, stopFollowUp, updateContactPreferences } =
+  const { board: columns, rows, counts, moveToStage, assign, stopFollowUp, reopenFollowUp, updateContactPreferences } =
     useVisitors(query);
+  const allows = useVisitorActionGate();
+  const closedStageId = useClosedStageId();
+
+  const boardActions = useMemo<BoardActions>(
+    () => ({
+      canMove: (row) => allows("move", row.person),
+      canStop: (row) => allows("stop", row.person),
+      canReopen: (row) => allows("reopen", row.person),
+      onMove: (personId, stageId) => void moveToStage(personId, stageId),
+      onStop: setClosing,
+      onReopen: (row, stageId) => void reopenFollowUp(row.person.id, stageId),
+      closedStageId,
+    }),
+    [allows, closedStageId, moveToStage, reopenFollowUp],
+  );
 
   if (!can("tasks.read.all")) {
     return (
@@ -63,7 +79,6 @@ export default function FollowUpPipelinePage() {
     );
   }
 
-  const canEdit = can("visitors.write");
   const filtersApplied = Boolean(search || assigneeFilter || stageParam);
 
   const emptyState = filtersApplied ? (
@@ -76,12 +91,7 @@ export default function FollowUpPipelinePage() {
   );
 
   const board = rows.length ? (
-    <PipelineBoard
-      columns={columns}
-      now={now}
-      canEdit={canEdit}
-      onMove={(personId, stageId) => moveToStage(personId, stageId)}
-    />
+    <PipelineBoard columns={columns} now={now} actions={boardActions} />
   ) : (
     emptyState
   );
@@ -98,20 +108,17 @@ export default function FollowUpPipelinePage() {
           className="h-11 w-full rounded-full sm:w-64"
           aria-label="Search the pipeline"
         />
-        <NativeSelect
+        <SelectField
           value={assigneeFilter}
-          onChange={(event) => setAssigneeFilter(event.target.value)}
+          onValueChange={setAssigneeFilter}
           aria-label="Filter by follow-up owner"
-          className="h-11 rounded-full"
-        >
-          <NativeSelectOption value="">Anyone looking after them</NativeSelectOption>
-          <NativeSelectOption value="unassigned">Nobody yet</NativeSelectOption>
-          {assignableTeam.map((member) => (
-            <NativeSelectOption key={member.id} value={member.id}>
-              {member.name}
-            </NativeSelectOption>
-          ))}
-        </NativeSelect>
+          triggerClassName="w-auto rounded-full"
+          options={[
+            { value: "", label: "Anyone looking after them" },
+            { value: "unassigned", label: "Nobody yet" },
+            ...assignableTeam.map((member) => ({ value: member.id, label: member.name })),
+          ]}
+        />
         {filtersApplied ? (
           <Button
             variant="ghost"
@@ -158,17 +165,22 @@ export default function FollowUpPipelinePage() {
                   return next;
                 })
               }
-              onToggleAll={() =>
-                setSelected((previous) =>
-                  previous.size === rows.length
-                    ? new Set()
-                    : new Set(rows.map((row) => row.person.id)),
-                )
+              onToggleAll={(pageIds) =>
+                setSelected((previous) => {
+                  const allOnPage = pageIds.every((personId) => previous.has(personId));
+                  const next = new Set(previous);
+                  for (const personId of pageIds) {
+                    if (allOnPage) next.delete(personId);
+                    else next.add(personId);
+                  }
+                  return next;
+                })
               }
               onAssign={setAssigning}
               onStopFollowUp={setClosing}
               onPreferences={setPreferences}
-              canEdit={canEdit}
+              onReopen={(row) => void reopenFollowUp(row.person.id)}
+              allows={(action, row) => allows(action, row.person)}
               emptyState={emptyState}
             />
           </TabsContent>
@@ -220,7 +232,7 @@ export default function FollowUpPipelinePage() {
 function journeySummary(counts: { total: number; awaitingAssignment: number; overdue: number }): string {
   const people = `${counts.total} ${counts.total === 1 ? "visitor" : "visitors"}`;
   const parts = [
-    counts.awaitingAssignment ? `${counts.awaitingAssignment} still need somebody to look after them` : null,
+    counts.awaitingAssignment ? `${counts.awaitingAssignment} still ${counts.awaitingAssignment === 1 ? "needs" : "need"} somebody to look after them` : null,
     counts.overdue ? `${counts.overdue} with a follow-up running late` : null,
   ].filter(Boolean);
   return parts.length ? `${people} · ${parts.join(" · ")}` : `${people}, and everyone has somebody looking out for them.`;

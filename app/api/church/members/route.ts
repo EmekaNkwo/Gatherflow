@@ -1,7 +1,8 @@
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { ok } from "@/lib/result";
-import { upsertTeamMember } from "@/services/settings/settings";
+import { auditTarget } from "@/services/settings/audit-labels";
+import { setTeamMemberActive, upsertTeamMember } from "@/services/settings/settings";
 import { auditResult, recordAudit } from "@/server/audit/audit";
 import { guardedSession } from "@/server/auth/admin-session";
 import { parseCommandInput } from "@/server/church/input";
@@ -95,7 +96,7 @@ export async function PATCH(request: Request): Promise<Response> {
       userId: session.userId,
       actorId: session.teamMemberId,
       action: "membership.role",
-      targetId: target.teamMemberId ?? input.value.userId,
+      targetId: auditTarget(target.teamMemberId ?? input.value.userId, role),
     },
     synced,
   );
@@ -131,13 +132,17 @@ export async function DELETE(request: Request): Promise<Response> {
   if (!removed.length) return respondErr("That account does not belong to this church.", "not_found");
 
   // The team member stays, inactive, so their history keeps its attribution.
-  if (removed[0].teamMemberId) {
-    const teamMemberId = removed[0].teamMemberId;
-    await runSystemCommand(db, session.churchId, (snapshot, ctx) => {
-      const member = snapshot.team.find((entry) => entry.id === teamMemberId);
-      if (!member) return ok({ snapshot, events: [], notices: [] });
-      return upsertTeamMember(snapshot, { id: member.id, name: member.name, role: member.role, title: member.title, active: false }, ctx);
-    });
-  }
-  return respondOk({ removed: true });
+  // Their open follow-ups are counted and returned with the notice, so the
+  // administrator can move them on rather than find them stranded later.
+  const teamMemberId = removed[0].teamMemberId;
+  if (!teamMemberId) return respondOk({ removed: true, teamMemberId: null, openTasks: 0, notices: [] });
+  let openTasks = 0;
+  const deactivated = await runSystemCommand(db, session.churchId, (snapshot) => {
+    if (!snapshot.team.some((entry) => entry.id === teamMemberId)) return ok({ snapshot, events: [], notices: [] });
+    const outcome = setTeamMemberActive(snapshot, teamMemberId, false);
+    if (outcome.ok) openTasks = outcome.value.openTasks;
+    return outcome;
+  });
+  const notices = deactivated.ok ? deactivated.value.notices : [];
+  return respondOk({ removed: true, teamMemberId, openTasks, notices });
 }

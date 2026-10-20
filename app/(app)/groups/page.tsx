@@ -1,7 +1,7 @@
 "use client";
 
 import { meetsLabel } from "@/lib/groups";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 import { ChevronRightIcon, PlusIcon, ShieldIcon, UsersRoundIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -16,10 +16,10 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageHeader, PageShell, Section } from "@/components/shared/page-header";
+import { SelectField, type SelectOption } from "@/components/shared/select-field";
 import { personHref } from "@/components/shared/person-cell";
 import { displayName } from "@/lib/strings";
 import {
@@ -35,18 +35,29 @@ import { useGroups } from "@/hooks/useGroups";
 /** How many people without a group show before "Show all". */
 const UNCONNECTED_PREVIEW = 6;
 
+const GROUP_TYPE_OPTIONS: SelectOption[] = GROUP_TYPES.map((option) => ({
+  value: option,
+  label: GROUP_TYPE_LABELS[option],
+}));
+
+/** Weekdays are stored lower-case; show them capitalised, as the old select did with CSS. */
+const WEEKDAY_OPTIONS: SelectOption[] = WEEKDAYS.map((day) => ({
+  value: day,
+  label: day.charAt(0).toUpperCase() + day.slice(1),
+}));
+
 
 /**
  * Groups: what groups exist, who leads them and when they meet, then the
  * members who are not in one yet. Nobody is added to a group automatically.
  */
 export default function GroupsPage() {
-  const { can } = useRole();
   const { groups, unconnected, create } = useGroups();
   const [creating, setCreating] = useState(false);
   const [showAll, setShowAll] = useState(false);
 
-  const canEdit = can("groups.write");
+  const { canRun } = useRole();
+  const canEdit = canRun("group.create", { name: "", description: "", type: "connect_group" });
   const activeCount = groups.filter((entry) => entry.group.active).length;
   const shownUnconnected = showAll ? unconnected : unconnected.slice(0, UNCONNECTED_PREVIEW);
 
@@ -146,7 +157,9 @@ export default function GroupsPage() {
           </>
         ) : (
           <p className="rounded-2xl bg-muted px-5 py-4 text-muted-foreground">
-            Everyone is in at least one group.
+            {groups.some((group) => group.members.length)
+              ? "Everyone is in at least one group."
+              : "Nobody is listed here yet. Members who aren't in a group will show here."}
           </p>
         )}
       </Section>
@@ -177,9 +190,12 @@ function CreateGroupDialog({
     location?: string;
     involvesMinors: boolean;
     schedule: { weekday: Weekday; time: string; frequency: "weekly" | "fortnightly" | "monthly" };
-  }) => void;
+  }) => Promise<void>;
 }) {
   const [name, setName] = useState("");
+  // In-flight guard: one tap, one group, however quickly it's pressed again.
+  const [saving, setSaving] = useState(false);
+  const inFlight = useRef(false);
   const [description, setDescription] = useState("");
   const [type, setType] = useState<GroupType>("connect_group");
   const [weekday, setWeekday] = useState<Weekday>("tuesday");
@@ -200,7 +216,7 @@ function CreateGroupDialog({
 
         <Field>
           <FieldLabel htmlFor="group-name">Name</FieldLabel>
-          <Input id="group-name" value={name} onChange={(event) => setName(event.target.value)} />
+          <Input id="group-name" maxLength={80} value={name} onChange={(event) => setName(event.target.value)} />
         </Field>
 
         <Field>
@@ -208,50 +224,36 @@ function CreateGroupDialog({
           <Textarea
             id="group-description"
             rows={2}
+            maxLength={500}
             value={description}
             onChange={(event) => setDescription(event.target.value)}
           />
         </Field>
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field>
-            <FieldLabel htmlFor="group-type">Type</FieldLabel>
-            <NativeSelect
-              className="w-full"
-              id="group-type"
-              value={type}
-              onChange={(event) => setType(event.target.value as GroupType)}
-            >
-              {GROUP_TYPES.map((option) => (
-                <NativeSelectOption key={option} value={option}>
-                  {GROUP_TYPE_LABELS[option]}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-          </Field>
+          <SelectField
+            id="group-type"
+            label="Type"
+            value={type}
+            onValueChange={(value) => setType(value as GroupType)}
+            options={GROUP_TYPE_OPTIONS}
+          />
           <Field>
             <FieldLabel htmlFor="group-location">Location</FieldLabel>
             <Input
               id="group-location"
+              maxLength={120}
               value={location}
               onChange={(event) => setLocation(event.target.value)}
             />
           </Field>
-          <Field>
-            <FieldLabel htmlFor="group-weekday">Meets on</FieldLabel>
-            <NativeSelect
-              className="w-full"
-              id="group-weekday"
-              value={weekday}
-              onChange={(event) => setWeekday(event.target.value as Weekday)}
-            >
-              {WEEKDAYS.map((day) => (
-                <NativeSelectOption key={day} value={day} className="capitalize">
-                  {day}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-          </Field>
+          <SelectField
+            id="group-weekday"
+            label="Meets on"
+            value={weekday}
+            onValueChange={(value) => setWeekday(value as Weekday)}
+            options={WEEKDAY_OPTIONS}
+          />
           <Field>
             <FieldLabel htmlFor="group-time">Time</FieldLabel>
             <Input
@@ -281,19 +283,28 @@ function CreateGroupDialog({
           <Button
             size="lg"
             className="rounded-full"
-            disabled={!name.trim()}
-            onClick={() =>
-              onConfirm({
-                name,
-                description,
-                type,
-                location: location || undefined,
-                involvesMinors,
-                schedule: { weekday, time, frequency: "weekly" },
-              })
-            }
+            disabled={!name.trim() || saving}
+            aria-busy={saving}
+            onClick={async () => {
+              if (inFlight.current) return;
+              inFlight.current = true;
+              setSaving(true);
+              try {
+                await onConfirm({
+                  name,
+                  description,
+                  type,
+                  location: location || undefined,
+                  involvesMinors,
+                  schedule: { weekday, time, frequency: "weekly" },
+                });
+              } finally {
+                inFlight.current = false;
+                setSaving(false);
+              }
+            }}
           >
-            Create group
+            {saving ? "Creating…" : "Create group"}
           </Button>
         </DialogFooter>
       </DialogContent>

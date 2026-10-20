@@ -37,8 +37,20 @@ describe("invitation email", () => {
   });
 
   it("reports a refused send without throwing, so the link can still be copied", async () => {
-    const send = vi.fn().mockResolvedValue(err("This deployment cannot send email yet.", "not_configured"));
+    const send = vi.fn().mockResolvedValue(err("The message could not be sent right now.", "transport"));
     const outcome = await sendInvitationEmail(INPUT, send);
-    expect(outcome).toEqual({ emailed: false, reason: "This deployment cannot send email yet." });
+    expect(outcome).toEqual({ emailed: false, reason: "The message could not be sent right now." });
+  });
+
+  it("calls an unconfigured deployment skipped, and doesn't tell the administrator to ask an administrator", async () => {
+    const send = vi.fn().mockResolvedValue(
+      err("This deployment cannot send email yet, so the message could not be sent. Ask your administrator.", "not_configured"),
+    );
+    const outcome = await sendInvitationEmail(INPUT, send);
+    expect(outcome).toEqual({
+      emailed: false,
+      skipped: true,
+      reason: "Email isn't set up here yet, so the invitation wasn't emailed.",
+    });
   });
 });

@@ -138,6 +138,27 @@ describe.skipIf(!CONNECTION)("postgres snapshot repository", () => {
     expect(reloaded.version).toBe(loaded.version + 1);
   });
 
+  it("renames the church row with the settings, so public pages and invitations agree (H7)", async () => {
+    const churchId = nextChurchId();
+    const repository = repositoryFor(churchId);
+    const loaded = await repository.load();
+    const renamed: ChurchSnapshot = {
+      ...loaded.snapshot,
+      settings: { ...loaded.snapshot.settings, churchName: "Grace Fellowship Renamed" },
+    };
+
+    expect((await repository.save(loaded.snapshot, renamed, loaded.version)).ok).toBe(true);
+    const [row] = await db.select({ name: churches.name }).from(churches).where(eq(churches.id, churchId));
+    expect(row.name).toBe("Grace Fellowship Renamed");
+
+    // A save that doesn't touch the name leaves the row's name alone.
+    const reloaded = await repositoryFor(churchId).load();
+    const unrelated: ChurchSnapshot = { ...reloaded.snapshot, people: [...reloaded.snapshot.people] };
+    expect((await repository.save(reloaded.snapshot, unrelated, reloaded.version)).ok).toBe(true);
+    const [after] = await db.select({ name: churches.name }).from(churches).where(eq(churches.id, churchId));
+    expect(after.name).toBe("Grace Fellowship Renamed");
+  });
+
   it("returns collections in a stable order across loads", async () => {
     // Postgres gives no ordering guarantee without ORDER BY, so without one a
     // reload would reshuffle every list in the interface.
@@ -210,6 +231,44 @@ describe.skipIf(!CONNECTION)("postgres snapshot repository", () => {
       .from(attendance)
       .where(eq(attendance.id, "attendance-sentinel"));
     expect(survivors[0]?.count).toBe(1);
+  });
+
+  it("writes only the rows that changed within a collection (M8)", async () => {
+    const churchId = nextChurchId();
+    const repository = repositoryFor(churchId);
+    const loaded = await repository.load();
+
+    // A row the snapshot does not know about: rewriting the whole attendance
+    // collection would delete it.
+    await db.insert(attendance).values({
+      churchId,
+      id: "attendance-sentinel",
+      sessionId: "session-sentinel",
+      personId: "person-sentinel",
+      status: "present",
+      data: { ...loaded.snapshot.attendance[0], id: "attendance-sentinel" },
+    });
+
+    const [changed, gone] = loaded.snapshot.attendance;
+    const next: ChurchSnapshot = {
+      ...loaded.snapshot,
+      attendance: loaded.snapshot.attendance
+        .filter((row) => row.id !== gone.id)
+        .map((row) => (row.id === changed.id ? { ...row, status: "removed" as const } : row)),
+    };
+
+    const saved = await repository.save(loaded.snapshot, next, loaded.version);
+    expect(saved.ok).toBe(true);
+
+    const rows = await db
+      .select({ id: attendance.id, status: attendance.status })
+      .from(attendance)
+      .where(eq(attendance.churchId, churchId));
+    const byId = new Map(rows.map((row) => [row.id, row.status]));
+    expect(byId.get("attendance-sentinel")).toBe("present");
+    expect(byId.get(changed.id)).toBe("removed");
+    expect(byId.has(gone.id)).toBe(false);
+    expect(rows).toHaveLength(loaded.snapshot.attendance.length);
   });
 
   it("refuses a commit whose version guard is stale", async () => {

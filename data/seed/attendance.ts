@@ -45,6 +45,10 @@ export function createAttendance(
   }
   const isFirstVisit = (personId: string, date: string) =>
     firstVisitDates.get(personId) === date;
+  // Nobody attends before their own first visit. The random draw still
+  // happens first, so the rest of the generated history stays the same.
+  const hadComeBy = (personId: string, date: string) =>
+    (firstVisitDates.get(personId) ?? "") <= date;
 
   const visitsByDate = new Map<string, string[]>();
   for (const plan of visitorPlans) {
@@ -72,7 +76,7 @@ export function createAttendance(
 
     for (const person of people) {
       const pattern = patterns.get(person.id) ?? "lapsed";
-      if (ctx.random() < PATTERN_PROBABILITY[pattern]) {
+      if (ctx.random() < PATTERN_PROBABILITY[pattern] && hadComeBy(person.id, sunday)) {
         attendance.push(
           record(
             ctx,
@@ -117,7 +121,7 @@ export function createAttendance(
 
       for (const person of people) {
         const pattern = patterns.get(person.id) ?? "lapsed";
-        if (pattern === "weekly" && ctx.chance(0.45)) {
+        if (pattern === "weekly" && ctx.chance(0.45) && hadComeBy(person.id, wednesday)) {
           attendance.push(
             record(ctx, midweekSession, person.id, "search", at(wednesday, 18, 30), false),
           );
@@ -141,7 +145,7 @@ export function createAttendance(
     };
     sessions.push(eventSession);
     for (const person of people) {
-      if ((patterns.get(person.id) ?? "lapsed") !== "lapsed" && ctx.chance(0.3)) {
+      if ((patterns.get(person.id) ?? "lapsed") !== "lapsed" && ctx.chance(0.3) && hadComeBy(person.id, eventDate)) {
         attendance.push(
           record(ctx, eventSession, person.id, "manual", at(eventDate, 11), false),
         );

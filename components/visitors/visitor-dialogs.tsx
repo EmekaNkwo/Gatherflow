@@ -3,10 +3,10 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
+import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
+import { SelectField } from "@/components/shared/select-field";
 import {
   ConsentChoice,
   DialogActions,
@@ -16,6 +16,16 @@ import {
 import { CONTACT_METHODS, CONTACT_METHOD_LABELS, type ContactMethod } from "@/types/common";
 import { CLOSURE_REASON_LABELS, type ClosureReason } from "@/types/person";
 import type { TeamMember } from "@/types/team";
+
+const CLOSURE_REASON_OPTIONS = (Object.keys(CLOSURE_REASON_LABELS) as ClosureReason[]).map((option) => ({
+  value: option,
+  label: CLOSURE_REASON_LABELS[option],
+}));
+
+const CONTACT_METHOD_OPTIONS = CONTACT_METHODS.map((option) => ({
+  value: option,
+  label: CONTACT_METHOD_LABELS[option],
+}));
 
 /**
  * Visitor dialogs.
@@ -68,23 +78,17 @@ function AssignFields({
   return (
     <>
       <DialogBody>
-        <Field>
-          <FieldLabel htmlFor="assignee">Person</FieldLabel>
-          <NativeSelect
-            className="w-full"
-            id="assignee"
-            value={assignee}
-            onChange={(event) => setAssignee(event.target.value)}
-          >
-            {team.map((member) => (
-              <NativeSelectOption key={member.id} value={member.id}>
-                {member.name}
-                {member.title ? ` · ${member.title}` : ""}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
-          <FieldDescription>Only people on the team today can take this on.</FieldDescription>
-        </Field>
+        <SelectField
+          id="assignee"
+          label="Person"
+          description="Only people on the team today can take this on."
+          value={assignee}
+          onValueChange={setAssignee}
+          options={team.map((member) => ({
+            value: member.id,
+            label: `${member.name}${member.title ? ` · ${member.title}` : ""}`,
+          }))}
+        />
       </DialogBody>
       <DialogActions>
         <Button variant="ghost" size="lg" onClick={onCancel}>
@@ -141,26 +145,19 @@ function CloseFollowUpFields({
   return (
     <>
       <DialogBody>
-        <Field>
-          <FieldLabel htmlFor="closure-reason">Why</FieldLabel>
-          <NativeSelect
-            className="w-full"
-            id="closure-reason"
-            value={reason}
-            onChange={(event) => setReason(event.target.value as ClosureReason)}
-          >
-            {(Object.keys(CLOSURE_REASON_LABELS) as ClosureReason[]).map((option) => (
-              <NativeSelectOption key={option} value={option}>
-                {CLOSURE_REASON_LABELS[option]}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
-        </Field>
+        <SelectField
+          id="closure-reason"
+          label="Why"
+          value={reason}
+          onValueChange={(value) => setReason(value as ClosureReason)}
+          options={CLOSURE_REASON_OPTIONS}
+        />
 
         <Field>
           <FieldLabel htmlFor="closure-note">Note (optional)</FieldLabel>
           <Textarea
             id="closure-note"
+            maxLength={500}
             rows={3}
             value={note}
             onChange={(event) => setNote(event.target.value)}
@@ -267,22 +264,14 @@ function ContactPreferenceFields({
           />
         </ConsentChoice>
 
-        <Field>
-          <FieldLabel htmlFor="preference-method">Best way to reach them</FieldLabel>
-          <NativeSelect
-            className="w-full"
-            id="preference-method"
-            value={method}
-            onChange={(event) => setMethod(event.target.value as ContactMethod)}
-            disabled={optedOut}
-          >
-            {CONTACT_METHODS.map((option) => (
-              <NativeSelectOption key={option} value={option}>
-                {CONTACT_METHOD_LABELS[option]}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
-        </Field>
+        <SelectField
+          id="preference-method"
+          label="Best way to reach them"
+          value={method}
+          onValueChange={(value) => setMethod(value as ContactMethod)}
+          disabled={optedOut}
+          options={CONTACT_METHOD_OPTIONS}
+        />
 
         <ConsentChoice
           id="preference-opt-out"
@@ -301,7 +290,12 @@ function ContactPreferenceFields({
         {optedOut ? (
           <Field>
             <FieldLabel htmlFor="preference-reason">Why (optional)</FieldLabel>
-            <Input id="preference-reason" value={reason} onChange={(event) => setReason(event.target.value)} />
+            <Input
+              id="preference-reason"
+              value={reason}
+              maxLength={500}
+              onChange={(event) => setReason(event.target.value)}
+            />
           </Field>
         ) : null}
       </DialogBody>

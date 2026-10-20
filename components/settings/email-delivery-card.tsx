@@ -1,5 +1,6 @@
 "use client";
 
+import { toast } from "sonner";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { cn } from "cn";
@@ -15,14 +16,17 @@ import { SettingsPanel } from "./settings-panel";
  */
 export function EmailDeliveryCard() {
   const [status, setStatus] = useState<RemoteEmailStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
     void fetchEmailStatus(controller.signal).then((outcome) => {
       if (controller.signal.aborted) return;
       if (outcome.ok) setStatus(outcome.value);
-      else setError(outcome.error);
+      else {
+        setFailed(true);
+        toast.error("Could not check email", { description: outcome.error });
+      }
     });
     return () => controller.abort();
   }, []);
@@ -58,11 +62,9 @@ export function EmailDeliveryCard() {
           ? availability.pilot
             ? "Real email is sent, but only to the addresses on the trial list."
             : "Email goes out through your church's provider. What Sent messages says about each one is what the provider told us."
-          : (availability?.reason ?? "Checking…")
+          : (availability?.reason ?? (failed ? "Not known right now." : "Checking…"))
       }
     >
-      {error ? <p className="text-sm text-destructive">{error}</p> : null}
-
       {status && status.failures.length === 0 ? (
         <p className="text-sm text-muted-foreground">Every email so far has gone out.</p>
       ) : null}

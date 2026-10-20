@@ -1,10 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { err, ok, type Result } from "@/lib/result";
 import { upsertTeamMember } from "@/services/settings/settings";
 import type { DemoRole } from "@/types/team";
 import type { Database } from "@/server/db/client";
-import { churches, churchMembers, invitations } from "@/server/db/schema";
+import { churches, churchMembers, invitations, user } from "@/server/db/schema";
 import { runSystemCommand } from "@/server/church/commands";
 
 /**
@@ -55,6 +55,9 @@ export async function createInvitation(
     return err("Members do not sign in; invite people to a working role.", "invalid_input");
   }
 
+  const clash = await findClash(db, input.churchId, email, input.teamMemberId ?? null);
+  if (clash) return clash;
+
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + INVITATION_DAYS * 24 * 60 * 60_000);
   const [row] = await db
@@ -73,6 +76,60 @@ export async function createInvitation(
   return ok({ token, invitation: summarise(row) });
 }
 
+/**
+ * Why a new invitation would only cause trouble later, if it would: a second
+ * open invitation for the same address (the two could carry different roles),
+ * an address that already has an account here (it would fail at accept), or a
+ * team member another account or invitation already speaks for.
+ */
+async function findClash(
+  db: Database,
+  churchId: string,
+  email: string,
+  teamMemberId: string | null,
+): Promise<Result<never> | null> {
+  const open = and(
+    eq(invitations.churchId, churchId),
+    isNull(invitations.acceptedAt),
+    gt(invitations.expiresAt, new Date()),
+  );
+
+  const [pending] = await db
+    .select({ id: invitations.id })
+    .from(invitations)
+    .where(and(open, eq(invitations.email, email)));
+  if (pending) {
+    return err(
+      `${email} already has an invitation waiting. Withdraw it first if you want to send a new one.`,
+      "duplicate",
+    );
+  }
+
+  const [member] = await db
+    .select({ userId: churchMembers.userId })
+    .from(churchMembers)
+    .innerJoin(user, eq(user.id, churchMembers.userId))
+    .where(and(eq(churchMembers.churchId, churchId), sql`lower(${user.email}) = ${email}`));
+  if (member) return err(`${email} already has an account in this church.`, "already_member");
+
+  if (teamMemberId) {
+    const [linked] = await db
+      .select({ userId: churchMembers.userId })
+      .from(churchMembers)
+      .where(and(eq(churchMembers.churchId, churchId), eq(churchMembers.teamMemberId, teamMemberId)));
+    if (linked) return err("That team member already signs in with another account.", "duplicate");
+
+    const [invited] = await db
+      .select({ email: invitations.email })
+      .from(invitations)
+      .where(and(open, eq(invitations.teamMemberId, teamMemberId)));
+    if (invited) {
+      return err(`That team member already has an invitation waiting, sent to ${invited.email}.`, "duplicate");
+    }
+  }
+  return null;
+}
+
 export async function listInvitations(db: Database, churchId: string): Promise<InvitationSummary[]> {
   const rows = await db
     .select()
@@ -82,11 +139,12 @@ export async function listInvitations(db: Database, churchId: string): Promise<I
   return rows.map(summarise);
 }
 
+/** Withdraws an open invitation; returns who it was for, or `null` if there was none. */
 export async function revokeInvitation(
   db: Database,
   churchId: string,
   invitationId: string,
-): Promise<boolean> {
+): Promise<{ email: string; role: DemoRole } | null> {
   const removed = await db
     .delete(invitations)
     .where(
@@ -96,8 +154,8 @@ export async function revokeInvitation(
         isNull(invitations.acceptedAt),
       ),
     )
-    .returning({ id: invitations.id });
-  return removed.length > 0;
+    .returning({ email: invitations.email, role: invitations.role });
+  return removed[0] ?? null;
 }
 
 export interface OpenInvitation {
@@ -168,13 +226,21 @@ export async function acceptInvitation(
 
   // The team member the account acts as: the one named by the invitation,
   // or a new one in the invited role. The command mints the new member's id,
-  // so it is read back from the snapshot the command returned.
+  // so it is read back from the snapshot the command returned. An existing
+  // team member takes the invited role and is switched back on, so what the
+  // team list says and what the account may do agree from the start.
   let teamMemberId = invitation.teamMemberId;
   let before = new Set<string>();
   const ensured = await runSystemCommand(db, invitation.churchId, (snapshot, ctx) => {
     before = new Set(snapshot.team.map((member) => member.id));
-    if (teamMemberId && before.has(teamMemberId)) {
-      return ok({ snapshot, events: [], notices: [] });
+    const linked = teamMemberId ? snapshot.team.find((member) => member.id === teamMemberId) : undefined;
+    if (linked) {
+      if (linked.role === invitation.role && linked.active) return ok({ snapshot, events: [], notices: [] });
+      return upsertTeamMember(
+        snapshot,
+        { id: linked.id, name: linked.name, role: invitation.role, title: linked.title, active: true },
+        ctx,
+      );
     }
     return upsertTeamMember(
       snapshot,

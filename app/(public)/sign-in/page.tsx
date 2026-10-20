@@ -1,16 +1,23 @@
 "use client";
 
+import { showFormError } from "@/lib/form-toast";
 import { Suspense, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { AUTH_INPUT, AUTH_PRIMARY, AuthLink, AuthShell } from "@/components/auth/auth-shell";
 import { authClient } from "@/lib/auth-client";
+import { useCooldown } from "@/hooks/useCooldown";
+import { DEFAULT_RETRY_SECONDS, notifyRateLimited, retryAfterCapture, tryAgainIn } from "@/lib/rate-limit";
 
 /** Email and password, one error message, and a full page load on success. */
+/** What went wrong, as a toast: the server"s words, then what to do next. */
+function showError(message: string): void {
+  showFormError("That didn’t work", message, "Try again, or choose “Forgotten your password?” above.");
+}
+
 export default function SignInPage() {
   return (
     <Suspense>
@@ -24,18 +31,24 @@ function SignInForm() {
   const next = safeNext(params.get("next"));
   const [email, setEmail] = useState(params.get("email") ?? "");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const cooldown = useCooldown();
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitting(true);
-    setError(null);
 
-    const outcome = await authClient.signIn.email({ email, password });
+    const retry = retryAfterCapture();
+    const outcome = await authClient.signIn.email({ email, password, fetchOptions: retry.fetchOptions });
     if (outcome.error) {
-      setError(outcome.error.message ?? "Those details were not recognised.");
       setSubmitting(false);
+      if (outcome.error.status === 429) {
+        const seconds = retry.seconds() ?? DEFAULT_RETRY_SECONDS;
+        cooldown.start(seconds);
+        notifyRateLimited(seconds);
+        return;
+      }
+      showError(outcome.error.message ?? "Those details were not recognised.");
       return;
     }
     // A full load, not a client navigation: the store must start empty so no
@@ -87,18 +100,8 @@ function SignInForm() {
             </Link>
           </Field>
 
-          {error ? (
-            <Alert variant="destructive">
-              <AlertTitle>That didn&apos;t work</AlertTitle>
-              <AlertDescription>
-                <span className="block">{error}</span>
-                <span className="block">Try again, or choose &ldquo;Forgotten your password?&rdquo; above.</span>
-              </AlertDescription>
-            </Alert>
-          ) : null}
-
-          <Button type="submit" size="lg" className={AUTH_PRIMARY} disabled={submitting || !email || !password}>
-            {submitting ? "Signing in…" : "Sign in"}
+          <Button type="submit" size="lg" className={AUTH_PRIMARY} disabled={submitting || cooldown.active || !email || !password}>
+            {cooldown.active ? tryAgainIn(cooldown.remaining) : submitting ? "Signing in…" : "Sign in"}
           </Button>
         </FieldGroup>
       </form>

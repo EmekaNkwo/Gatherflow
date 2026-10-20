@@ -1,13 +1,15 @@
 import { formatDisplayDate } from "@/lib/dates";
 import { err, ok, type Result } from "@/lib/result";
-import { displayName, normalisePhone, normalise } from "@/lib/strings";
-import { parseCsvRecords } from "@/lib/csv";
+import { displayName } from "@/lib/strings";
 import type { PersonId, SessionId } from "@/types/common";
-import type { AttendanceRecord, CheckInMethod } from "@/types/attendance";
+import type { AttendanceRecord, AttendanceSession, CheckInMethod } from "@/types/attendance";
 import type { ChurchSnapshot } from "@/types/snapshot";
 import type { CommandContext } from "../core/context";
-import { result, type CommandResult, type DomainEvent } from "../core/events";
+import { result, type CommandResult } from "../core/events";
 import { activity, findPerson, patch, replaceById, withActivity } from "../core/snapshot";
+import { settleVisitChange } from "./visit-changes";
+
+export { visitCount } from "./visits";
 
 export interface RecordAttendanceInput {
   sessionId: SessionId;
@@ -34,10 +36,16 @@ export function attendanceForPerson(
     .sort((left, right) => (left.recordedAt < right.recordedAt ? 1 : -1));
 }
 
-export function visitCount(snapshot: ChurchSnapshot, personId: PersonId): number {
-  return snapshot.attendance.filter(
-    (row) => row.personId === personId && row.status === "present",
-  ).length;
+/**
+ * A service that has not happened yet cannot have been attended. The morning
+ * of the service is fine: "today" counts.
+ */
+function notYetHappened(session: AttendanceSession, ctx: CommandContext): Result<never> | null {
+  if (session.date <= ctx.today) return null;
+  return err(
+    `${session.name} on ${formatDisplayDate(session.date)} hasn't happened yet. Check people in on the day.`,
+    "invalid",
+  );
 }
 
 /**
@@ -45,7 +53,8 @@ export function visitCount(snapshot: ChurchSnapshot, personId: PersonId): number
  *
  * Checking the same person in twice is refused rather than silently
  * duplicated. A previously removed record is restored instead of creating a
- * second row, so the correction history stays intact.
+ * second row, so the correction history stays intact. Check-in to a service
+ * dated after today is refused.
  */
 export function recordAttendance(
   snapshot: ChurchSnapshot,
@@ -69,57 +78,50 @@ export function recordAttendance(
     );
   }
 
-  const priorVisits = visitCount(snapshot, input.personId);
+  const future = notYetHappened(session, ctx);
+  if (future) return future;
+
   const method = input.method ?? "search";
 
-  let next: ChurchSnapshot;
-
-  if (existing) {
-    next = patch(snapshot, {
-      attendance: replaceById(snapshot.attendance, existing.id, (row) => ({
-        ...row,
-        status: "present",
-        method,
-        recordedAt: ctx.nowIso,
-        recordedBy: ctx.actorId,
-        corrections: [
-          ...row.corrections,
-          { at: ctx.nowIso, by: ctx.actorId, action: "restored" as const },
+  const recorded = existing
+    ? patch(snapshot, {
+        attendance: replaceById(snapshot.attendance, existing.id, (row) => ({
+          ...row,
+          status: "present",
+          method,
+          recordedAt: ctx.nowIso,
+          recordedBy: ctx.actorId,
+          corrections: [
+            ...row.corrections,
+            { at: ctx.nowIso, by: ctx.actorId, action: "restored" as const },
+          ],
+        })),
+      })
+    : patch(snapshot, {
+        attendance: [
+          ...snapshot.attendance,
+          {
+            id: ctx.id("attendance"),
+            sessionId: input.sessionId,
+            personId: input.personId,
+            method,
+            status: "present",
+            recordedAt: ctx.nowIso,
+            recordedBy: ctx.actorId,
+            // Worked out from the dates of every visit just below.
+            firstVisit: false,
+            corrections: [],
+          },
         ],
-      })),
-    });
-  } else {
-    const record: AttendanceRecord = {
-      id: ctx.id("attendance"),
-      sessionId: input.sessionId,
-      personId: input.personId,
-      method,
-      status: "present",
-      recordedAt: ctx.nowIso,
-      recordedBy: ctx.actorId,
-      firstVisit: priorVisits === 0,
-      corrections: [],
-    };
-    next = patch(snapshot, { attendance: [...snapshot.attendance, record] });
-  }
-
-  const visits = priorVisits + 1;
-  const events: DomainEvent[] = [];
+      });
 
   // A visitor coming back is a meaningful moment: the automation engine
   // reviews the next follow-up action off the back of this event.
-  if (person.visitor && visits > 1) {
-    events.push({
-      type: "visitor.returned",
-      personId: person.id,
-      sessionId: session.id,
-      visitCount: visits,
-    });
-  }
+  const settled = settleVisitChange(snapshot, recorded, person.id, session, ctx);
 
   return ok(
     result(
-      withActivity(next, ctx, [
+      withActivity(settled.snapshot, ctx, [
         activity(ctx, {
           type: "attendance.recorded",
           category: "attendance",
@@ -130,13 +132,17 @@ export function recordAttendance(
           meta: { sessionId: session.id },
         }),
       ]),
-      events,
-      [`${displayName(person)} checked in to ${session.name}.`],
+      settled.events,
+      [`${displayName(person)} checked in to ${session.name}.`, ...settled.notices],
     ),
   );
 }
 
-/** Removes an attendance record, keeping the row and recording the reason. */
+/**
+ * Removes an attendance record, keeping the row and recording the reason.
+ * When that takes away a return visit, the "Returned" stage and its
+ * follow-up are undone as well.
+ */
 export function removeAttendance(
   snapshot: ChurchSnapshot,
   recordId: string,
@@ -150,7 +156,7 @@ export function removeAttendance(
   const person = findPerson(snapshot, record.personId);
   const session = snapshot.sessions.find((entry) => entry.id === record.sessionId);
 
-  const next = patch(snapshot, {
+  const removed = patch(snapshot, {
     attendance: replaceById(snapshot.attendance, recordId, (row) => ({
       ...row,
       status: "removed",
@@ -160,10 +166,17 @@ export function removeAttendance(
       ],
     })),
   });
+  const settled = settleVisitChange(
+    snapshot,
+    removed,
+    record.personId,
+    { id: record.sessionId, date: session?.date ?? ctx.today },
+    ctx,
+  );
 
   return ok(
     result(
-      withActivity(next, ctx, [
+      withActivity(settled.snapshot, ctx, [
         activity(ctx, {
           type: "attendance.corrected",
           category: "attendance",
@@ -174,13 +187,19 @@ export function removeAttendance(
           meta: { sessionId: record.sessionId },
         }),
       ]),
-      [],
-      ["Attendance record corrected."],
+      settled.events,
+      ["Attendance record corrected.", ...settled.notices],
     ),
   );
 }
 
-/** Moves a record to a different session, for a check-in on the wrong day. */
+/**
+ * Moves a check-in made against the wrong service.
+ *
+ * When the person already has a row at the target service that was taken off
+ * the list earlier, that row is restored and this one is taken off instead —
+ * one row per person per service, and both corrections stay on record.
+ */
 export function moveAttendance(
   snapshot: ChurchSnapshot,
   recordId: string,
@@ -195,37 +214,41 @@ export function moveAttendance(
   if (!target) return err("That session no longer exists.", "not_found");
   if (record.sessionId === toSessionId) return err("The record is already in that session.", "unchanged");
 
-  const clash = snapshot.attendance.find(
-    (row) =>
-      row.sessionId === toSessionId &&
-      row.personId === record.personId &&
-      row.status === "present",
+  const atTarget = snapshot.attendance.find(
+    (row) => row.sessionId === toSessionId && row.personId === record.personId,
   );
-  if (clash) return err("That person is already checked in to the target session.", "duplicate");
+  if (atTarget?.status === "present") {
+    return err("That person is already checked in to the target session.", "duplicate");
+  }
+
+  const future = notYetHappened(target, ctx);
+  if (future) return future;
 
   const person = findPerson(snapshot, record.personId);
-
-  const next = patch(snapshot, {
-    attendance: replaceById(snapshot.attendance, recordId, (row) => ({
-      ...row,
-      sessionId: toSessionId,
-      status: "present",
-      corrections: [
-        ...row.corrections,
-        {
-          at: ctx.nowIso,
-          by: ctx.actorId,
-          action: "moved_session" as const,
-          reason,
-          previousSessionId: row.sessionId,
-        },
-      ],
-    })),
-  });
+  const moved = atTarget
+    ? swapIntoRemovedRow(snapshot, record, atTarget, target, reason, ctx)
+    : patch(snapshot, {
+        attendance: replaceById(snapshot.attendance, recordId, (row) => ({
+          ...row,
+          sessionId: toSessionId,
+          status: "present",
+          corrections: [
+            ...row.corrections,
+            {
+              at: ctx.nowIso,
+              by: ctx.actorId,
+              action: "moved_session" as const,
+              reason,
+              previousSessionId: row.sessionId,
+            },
+          ],
+        })),
+      });
+  const settled = settleVisitChange(snapshot, moved, record.personId, target, ctx);
 
   return ok(
     result(
-      withActivity(next, ctx, [
+      withActivity(settled.snapshot, ctx, [
         activity(ctx, {
           type: "attendance.corrected",
           category: "attendance",
@@ -236,80 +259,53 @@ export function moveAttendance(
           meta: { sessionId: toSessionId },
         }),
       ]),
-      [],
-      ["Attendance moved."],
+      settled.events,
+      ["Attendance moved.", ...settled.notices],
     ),
   );
 }
 
-export interface CsvImportSummary {
-  matched: number;
-  skipped: number;
-  /** Rows that could not be matched to a person in the directory. */
-  unmatched: string[];
-  duplicates: string[];
-}
-
-/**
- * Imports a mock attendance CSV with `name` and optional `phone` columns.
- * Unmatched rows are reported rather than guessed at, and no new people are
- * created by an import.
- */
-export function importAttendanceCsv(
+/** Restores the person's earlier row at the target and takes the source off. */
+function swapIntoRemovedRow(
   snapshot: ChurchSnapshot,
-  sessionId: SessionId,
-  csv: string,
+  source: AttendanceRecord,
+  removedAtTarget: AttendanceRecord,
+  target: AttendanceSession,
+  reason: string | undefined,
   ctx: CommandContext,
-): Result<CommandResult & { summary: CsvImportSummary }> {
-  const session = snapshot.sessions.find((entry) => entry.id === sessionId);
-  if (!session) return err("That session no longer exists.", "not_found");
-
-  const rows = parseCsvRecords(csv);
-  if (!rows.length) return err("That file has no rows to import.", "invalid");
-
-  const summary: CsvImportSummary = { matched: 0, skipped: 0, unmatched: [], duplicates: [] };
-  let current = snapshot;
-
-  for (const row of rows) {
-    const name = row.name ?? `${row["first name"] ?? ""} ${row["last name"] ?? ""}`.trim();
-    const phone = normalisePhone(row.phone);
-    const needle = normalise(name);
-
-    const person = current.people.find((candidate) => {
-      if (phone && normalisePhone(candidate.phone) === phone) return true;
-      return normalise(`${candidate.firstName} ${candidate.lastName}`) === needle;
-    });
-
-    if (!person) {
-      summary.unmatched.push(name || phone || "(blank row)");
-      continue;
+): ChurchSnapshot {
+  const note = reason ?? `Moved to ${target.name} on ${formatDisplayDate(target.date)}`;
+  const attendance = snapshot.attendance.map((row) => {
+    if (row.id === source.id) {
+      return {
+        ...row,
+        status: "removed" as const,
+        corrections: [
+          ...row.corrections,
+          { at: ctx.nowIso, by: ctx.actorId, action: "removed" as const, reason: note },
+        ],
+      };
     }
-
-    const outcome = recordAttendance(
-      current,
-      { sessionId, personId: person.id, method: "csv_import" },
-      ctx,
-    );
-
-    if (outcome.ok) {
-      current = outcome.value.snapshot;
-      summary.matched += 1;
-    } else {
-      summary.skipped += 1;
-      if (outcome.code === "duplicate") summary.duplicates.push(displayName(person));
+    if (row.id === removedAtTarget.id) {
+      return {
+        ...row,
+        status: "present" as const,
+        method: source.method,
+        recordedAt: ctx.nowIso,
+        recordedBy: ctx.actorId,
+        corrections: [
+          ...row.corrections,
+          {
+            at: ctx.nowIso,
+            by: ctx.actorId,
+            action: "restored" as const,
+            reason,
+            previousSessionId: source.sessionId,
+          },
+        ],
+      };
     }
-  }
-
-  return ok({
-    ...result(current, [], [
-      `${summary.matched} attendance record${summary.matched === 1 ? "" : "s"} imported.`,
-      ...(summary.duplicates.length
-        ? [`${summary.duplicates.length} already checked in.`]
-        : []),
-      ...(summary.unmatched.length
-        ? [`${summary.unmatched.length} row${summary.unmatched.length === 1 ? "" : "s"} did not match anyone.`]
-        : []),
-    ]),
-    summary,
+    return row;
   });
+  return patch(snapshot, { attendance });
 }

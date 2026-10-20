@@ -23,13 +23,15 @@ import {
   type TaskStatus,
 } from "@/types/follow-up";
 import type { TaskWithPerson } from "@/services/follow-ups/selectors";
+import { ownerLabel, type TaskActionGate } from "./task-list";
 
 interface TaskTableProps {
   rows: TaskWithPerson[];
   now: Date;
   toolbar?: React.ReactNode;
   emptyState: React.ReactNode;
-  canEdit: boolean;
+  /** Per-task check: each action is offered only when the server would allow it. */
+  allows: TaskActionGate;
   onComplete: (row: TaskWithPerson) => void;
   onReschedule: (row: TaskWithPerson) => void;
   onAssign: (row: TaskWithPerson) => void;
@@ -59,7 +61,7 @@ export function TaskTable({
   now,
   toolbar,
   emptyState,
-  canEdit,
+  allows,
   onComplete,
   onReschedule,
   onAssign,
@@ -136,10 +138,10 @@ export function TaskTable({
         header: "Who's doing it",
         accessorFn: (row) => row.assigneeName ?? "",
         cell: ({ row }) =>
-          row.original.assigneeName ? (
+          row.original.assigneeName && !row.original.ownerInactive ? (
             <span>{row.original.assigneeName}</span>
           ) : (
-            <span className="text-muted-foreground">Nobody yet</span>
+            <span className="text-muted-foreground first-letter:uppercase">{ownerLabel(row.original)}</span>
           ),
       },
       {
@@ -192,6 +194,7 @@ export function TaskTable({
         enableHiding: false,
         cell: ({ row }) => {
           const open = !FINISHED.includes(row.original.task.status);
+          const may = (action: Parameters<TaskActionGate>[0]) => open && allows(action, row.original);
           return (
             <DropdownMenu>
               <DropdownMenuTrigger
@@ -202,30 +205,32 @@ export function TaskTable({
                 }
               />
               <DropdownMenuContent align="end" className="min-w-56">
-                {canEdit && open ? (
-                  <>
-                    <DropdownMenuItem className="min-h-11" onClick={() => onComplete(row.original)}>
-                      Done: record what happened
-                    </DropdownMenuItem>
-                    <DropdownMenuItem className="min-h-11" onClick={() => onReschedule(row.original)}>
-                      Move to another day
-                    </DropdownMenuItem>
-                    <DropdownMenuItem className="min-h-11" onClick={() => onAssign(row.original)}>
-                      Give to someone else
-                    </DropdownMenuItem>
-                    {row.original.person && !row.original.person.contact.optedOut ? (
-                      <DropdownMenuItem className="min-h-11" onClick={() => onMessage(row.original)}>
-                        Write a message
-                      </DropdownMenuItem>
-                    ) : null}
-                  </>
+                {may("complete") ? (
+                  <DropdownMenuItem className="min-h-11" onClick={() => onComplete(row.original)}>
+                    Done: record what happened
+                  </DropdownMenuItem>
+                ) : null}
+                {may("reschedule") ? (
+                  <DropdownMenuItem className="min-h-11" onClick={() => onReschedule(row.original)}>
+                    Move to another day
+                  </DropdownMenuItem>
+                ) : null}
+                {may("assign") ? (
+                  <DropdownMenuItem className="min-h-11" onClick={() => onAssign(row.original)}>
+                    Give to someone else
+                  </DropdownMenuItem>
+                ) : null}
+                {may("message") ? (
+                  <DropdownMenuItem className="min-h-11" onClick={() => onMessage(row.original)}>
+                    Write a message
+                  </DropdownMenuItem>
                 ) : null}
                 {row.original.person ? (
                   <DropdownMenuItem className="min-h-11" render={<Link href={personHref(row.original.person)} />}>
                     Open their page
                   </DropdownMenuItem>
                 ) : null}
-                {canEdit && open ? (
+                {may("cancel") ? (
                   <>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem className="min-h-11" variant="destructive" onClick={() => onCancel(row.original)}>
@@ -239,7 +244,7 @@ export function TaskTable({
         },
       },
     ],
-    [canEdit, now, onAssign, onCancel, onComplete, onMessage, onReschedule],
+    [allows, now, onAssign, onCancel, onComplete, onMessage, onReschedule],
   );
 
   return (

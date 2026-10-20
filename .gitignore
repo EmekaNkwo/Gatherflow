@@ -49,3 +49,6 @@ next-env.d.ts
 
 # local scratch output used while developing
 /tmp
+
+# vitest JUnit report (see vitest.config.mts)
+/.vitest-reports

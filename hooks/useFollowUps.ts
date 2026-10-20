@@ -6,12 +6,17 @@ import type { IsoDate, PersonId, TaskId, TeamMemberId } from "@/types/common";
 import type { TaskOutcome } from "@/types/follow-up";
 import {
   completionRate,
+  needsOwner,
   selectTasks,
   volunteerWorkloads,
   type TaskFilters,
 } from "@/services/follow-ups/selectors";
 import { type CreateTaskInput } from "@/services/follow-ups/tasks";
+import { canBeContacted } from "@/services/follow-ups/contact";
+import type { TaskActionGate } from "@/components/follow-ups/task-list";
+import { toIsoDate } from "@/lib/dates";
 import { useSessionStore } from "@/stores/session-store";
+import { useRole } from "./useRole";
 import { useCommand, useSnapshot } from "./use-church-data";
 import { useNow } from "./use-now";
 
@@ -51,11 +56,8 @@ export function useFollowUps(filters: TaskFilters = {}) {
       ).length,
       dueToday: all.filter((entry) => entry.dueToday).length,
       overdue: all.filter((entry) => entry.overdue).length,
-      unassigned: all.filter(
-        (entry) =>
-          !entry.task.assigneeId &&
-          ["pending", "in_progress", "rescheduled"].includes(entry.task.status),
-      ).length,
+      // Open work with nobody active responsible, the same as the dashboard.
+      unassigned: all.filter((entry) => needsOwner(entry.task, snapshot)).length,
       completed: all.filter((entry) => entry.task.status === "completed").length,
     };
   }, [snapshot, now, scope, teamMemberId]);
@@ -122,4 +124,36 @@ export function usePersonTasks(personId: PersonId) {
   const snapshot = useSnapshot();
   const now = useNow();
   return useMemo(() => selectTasks(snapshot, { personId }, now), [snapshot, personId, now]);
+}
+
+/**
+ * Which follow-up actions to offer for a given task: the command each one
+ * dispatches, checked with `canRun`, so a volunteer is never shown a button
+ * for somebody else's work that the server would refuse.
+ */
+export function useTaskActionGate(): TaskActionGate {
+  const { can, canRun } = useRole();
+  const now = useNow();
+  const today = toIsoDate(now);
+
+  return useCallback<TaskActionGate>(
+    (action, entry) => {
+      const taskId = entry.task.id;
+      switch (action) {
+        case "complete":
+          return canRun("task.complete", { taskId, outcome: "contacted" });
+        case "reschedule":
+          return canRun("task.reschedule", { taskId, dueDate: today });
+        case "assign":
+          return canRun("task.assign", { taskId });
+        case "cancel":
+          return canRun("task.cancel", { taskId });
+        case "message":
+          return Boolean(entry.person && canBeContacted(entry.person)) && can("communications.write");
+        default:
+          return false;
+      }
+    },
+    [can, canRun, today],
+  );
 }

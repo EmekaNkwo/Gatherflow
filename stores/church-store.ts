@@ -3,8 +3,17 @@
 import { create } from "zustand";
 import { err, ok, type Result } from "@/lib/result";
 import type { LoadReport } from "@/services/repositories/collection";
-import { fetchChurch, postCommand, postEmail } from "@/services/commands/client";
-import type { CommandInput, CommandName, CommandResultOf } from "@/services/commands/registry";
+import {
+  fetchChurch,
+  newRequestId,
+  postCommand,
+  postEmail,
+} from "@/services/commands/client";
+import type {
+  CommandInput,
+  CommandName,
+  CommandResultOf,
+} from "@/services/commands/registry";
 import type { ChurchSnapshot } from "@/types/snapshot";
 import type { DemoRole } from "@/types/team";
 import {
@@ -54,6 +63,12 @@ export interface ChurchStore {
   /** Re-reads the church from the server, e.g. after another tab changed it. */
   refresh: () => Promise<void>;
   /**
+   * Re-reads the church quietly — no loading state, and a failure leaves what
+   * is on screen alone. Used when the window regains focus and after a
+   * refusal, which usually means somebody else changed the thing first.
+   */
+  revalidate: () => Promise<void>;
+  /**
    * Runs a named command on the server. Named rather than passed as a
    * function, because a closure cannot cross a network.
    */
@@ -70,11 +85,40 @@ export interface ChurchStore {
  * render ever sees a stale role. Registered by the session store, which
  * this module cannot import without a cycle.
  */
-let sessionAdopter: (role: DemoRole, teamMemberId: string | null) => void = () => undefined;
+let sessionAdopter: (
+  role: DemoRole,
+  teamMemberId: string | null,
+) => void = () => undefined;
 
 export function setSessionAdopter(adopt: typeof sessionAdopter): void {
   sessionAdopter = adopt;
 }
+
+/** Refusals that say "the data you acted on is wrong", not "you typed it wrong". */
+const STALE_CODES = new Set([
+  "not_found",
+  "closed",
+  "duplicate",
+  "opted_out",
+  "inactive",
+  "terminal",
+  "conflict",
+  "in_progress",
+]);
+
+/**
+ * Commands in flight, keyed by name and input. A second identical request
+ * while the first is still on its way — a double tap, Enter pressed twice —
+ * shares the first one's answer instead of doing the thing twice.
+ */
+const inFlight = new Map<string, Promise<unknown>>();
+
+/**
+ * Request ids of commands that never got an answer. Trying the same thing
+ * again reuses the id, so if the first attempt did reach the server after all,
+ * the server recognises it and does not do it twice.
+ */
+const unanswered = new Map<string, string>();
 
 export const useChurchStore = create<ChurchStore>((set, get) => {
   async function load(): Promise<void> {
@@ -92,7 +136,10 @@ export const useChurchStore = create<ChurchStore>((set, get) => {
       return;
     }
     if (loaded.value.actingAs) {
-      sessionAdopter(loaded.value.actingAs.role, loaded.value.actingAs.teamMemberId);
+      sessionAdopter(
+        loaded.value.actingAs.role,
+        loaded.value.actingAs.teamMemberId,
+      );
     }
     set({
       snapshot: loaded.value.snapshot,
@@ -128,28 +175,74 @@ export const useChurchStore = create<ChurchStore>((set, get) => {
 
     refresh: load,
 
-    dispatch: async (name, input) => {
-      type Outcome = Result<CommandResultOf<typeof name>>;
-      const posted = await postCommand(name, input);
-      if (!posted.ok) return posted as Outcome;
+    revalidate: async () => {
+      if (get().status !== "ready") return;
+      // Best effort: a failed or thrown re-read leaves what is on screen alone.
+      let loaded: Awaited<ReturnType<typeof fetchChurch>> | undefined;
+      try {
+        loaded = await fetchChurch();
+      } catch {
+        return;
+      }
+      if (loaded?.ok)
+        set({
+          snapshot: loaded.value.snapshot,
+          remoteVersion: loaded.value.version,
+        });
+    },
 
-      set({ snapshot: posted.value.snapshot, lastNotices: posted.value.notices });
+    dispatch: (name, input) => {
+      const key = `${name}:${JSON.stringify(input)}`;
+      const pending = inFlight.get(key) as
+        ReturnType<ChurchStore["dispatch"]> | undefined;
+      if (pending) return pending as never;
 
-      return ok({
-        snapshot: posted.value.snapshot,
-        events: [],
-        notices: posted.value.notices,
-        ...posted.value.data,
-      } as CommandResultOf<typeof name>);
+      const requestId = unanswered.get(key) ?? newRequestId();
+      const request = send(name, input, requestId)
+        .then((outcome) => {
+          if (!outcome.ok && outcome.code === "transport")
+            unanswered.set(key, requestId);
+          else unanswered.delete(key);
+          return outcome;
+        })
+        .finally(() => inFlight.delete(key));
+      inFlight.set(key, request);
+      return request;
     },
 
     sendEmail: async (input) => {
       const posted = await postEmail(input);
       if (!posted.ok) return posted;
-      set({ snapshot: posted.value.snapshot, lastNotices: posted.value.notices });
+      set({
+        snapshot: posted.value.snapshot,
+        lastNotices: posted.value.notices,
+      });
       return ok(posted.value.data);
     },
   };
+
+  async function send<N extends CommandName>(
+    name: N,
+    input: CommandInput<N>,
+    requestId: string,
+  ): Promise<Result<CommandResultOf<N>>> {
+    type Outcome = Result<CommandResultOf<N>>;
+    const posted = await postCommand(name, input, requestId);
+    if (!posted.ok) {
+      // What is on screen was out of date; show what is true now.
+      if (posted.code && STALE_CODES.has(posted.code)) void get().revalidate();
+      return posted as Outcome;
+    }
+
+    set({ snapshot: posted.value.snapshot, lastNotices: posted.value.notices });
+
+    return ok({
+      snapshot: posted.value.snapshot,
+      events: [],
+      notices: posted.value.notices,
+      ...posted.value.data,
+    } as CommandResultOf<N>);
+  }
 });
 
 /** Reads the snapshot outside React (tests, one-off exports). */

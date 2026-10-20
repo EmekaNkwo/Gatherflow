@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import Link from "next/link";
 import { CheckSquareIcon, MoreHorizontalIcon, SquareIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -18,17 +18,26 @@ import { PersonCell } from "@/components/shared/person-cell";
 import { formatShortDate } from "@/lib/dates";
 import type { VisitorRow } from "@/services/visitors/selectors";
 
+/** What can be done to one visitor from the table's row menu. */
+export type VisitorAction = "assign" | "preferences" | "stop" | "reopen";
+
 interface VisitorTableProps {
   rows: VisitorRow[];
   selected: ReadonlySet<string>;
   onToggle: (personId: string) => void;
-  onToggleAll: () => void;
+  /**
+   * Selects or clears the rows on the page being shown — never rows on other
+   * pages the person cannot see.
+   */
+  onToggleAll: (pageIds: readonly string[]) => void;
   onAssign: (row: VisitorRow) => void;
   onStopFollowUp: (row: VisitorRow) => void;
   onPreferences: (row: VisitorRow) => void;
-  toolbar?: React.ReactNode;
-  emptyState: React.ReactNode;
-  canEdit: boolean;
+  onReopen?: (row: VisitorRow) => void;
+  toolbar?: ReactNode;
+  emptyState: ReactNode;
+  /** Per-visitor check (`canRun` underneath), so only allowed actions show. */
+  allows: (action: VisitorAction, row: VisitorRow) => boolean;
 }
 
 /** The visitor directory table. */
@@ -40,9 +49,10 @@ export function VisitorTable({
   onAssign,
   onStopFollowUp,
   onPreferences,
+  onReopen,
   toolbar,
   emptyState,
-  canEdit,
+  allows,
 }: VisitorTableProps) {
   const columns = useMemo<GatherFlowColumn<VisitorRow>[]>(
     () => [
@@ -50,20 +60,20 @@ export function VisitorTable({
         id: "select",
         enableHiding: false,
         enableSorting: false,
-        header: () => (
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={onToggleAll}
-            aria-label="Select all visitors on this page"
-          >
-            {selected.size && selected.size === rows.length ? (
-              <CheckSquareIcon />
-            ) : (
-              <SquareIcon />
-            )}
-          </Button>
-        ),
+        header: ({ table }) => {
+          const pageIds = table.getRowModel().rows.map((entry) => entry.original.person.id);
+          const allOnPage = pageIds.length > 0 && pageIds.every((personId) => selected.has(personId));
+          return (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => onToggleAll(pageIds)}
+              aria-label={allOnPage ? "Clear the visitors on this page" : "Select all visitors on this page"}
+            >
+              {allOnPage ? <CheckSquareIcon /> : <SquareIcon />}
+            </Button>
+          );
+        },
         cell: ({ row }) => (
           <Checkbox
             checked={selected.has(row.original.person.id)}
@@ -120,7 +130,7 @@ export function VisitorTable({
         id: "assignee",
         header: "Assigned to",
         accessorFn: (row) => row.assigneeName ?? "",
-        cell: ({ row }) => <TextCell value={row.original.assigneeName ?? "Unassigned"} />,
+        cell: ({ row }) => <TextCell value={row.original.assigneeName ?? "Nobody yet"} />,
       },
       {
         id: "nextFollowUp",
@@ -152,21 +162,19 @@ export function VisitorTable({
               <DropdownMenuItem render={<Link href={`/visitors/${row.original.person.id}`} />}>
                 Open record
               </DropdownMenuItem>
-              {canEdit ? (
+              {allows("assign", row.original) ? (
+                <DropdownMenuItem onClick={() => onAssign(row.original)}>Assign follow-up</DropdownMenuItem>
+              ) : null}
+              {allows("preferences", row.original) ? (
+                <DropdownMenuItem onClick={() => onPreferences(row.original)}>Contact preferences</DropdownMenuItem>
+              ) : null}
+              {onReopen && allows("reopen", row.original) ? (
+                <DropdownMenuItem onClick={() => onReopen(row.original)}>Reopen follow-up</DropdownMenuItem>
+              ) : null}
+              {allows("stop", row.original) ? (
                 <>
-                  <DropdownMenuItem onClick={() => onAssign(row.original)}>
-                    Assign follow-up
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => onPreferences(row.original)}>
-                    Contact preferences
-                  </DropdownMenuItem>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem
-                    onClick={() => onStopFollowUp(row.original)}
-                    disabled={Boolean(row.original.closedReason)}
-                  >
-                    Stop follow-up
-                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => onStopFollowUp(row.original)}>Stop follow-up</DropdownMenuItem>
                 </>
               ) : null}
             </DropdownMenuContent>
@@ -174,7 +182,7 @@ export function VisitorTable({
         ),
       },
     ],
-    [canEdit, onAssign, onPreferences, onStopFollowUp, onToggle, onToggleAll, rows.length, selected],
+    [allows, onAssign, onPreferences, onReopen, onStopFollowUp, onToggle, onToggleAll, selected],
   );
 
   return (

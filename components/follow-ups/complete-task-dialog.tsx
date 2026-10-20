@@ -11,6 +11,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { displayName } from "@/lib/strings";
 import { FOLLOW_UP_TASK_TYPE_LABELS, type TaskOutcome } from "@/types/follow-up";
 import type { TaskWithPerson } from "@/services/follow-ups/selectors";
+import { OUTCOMES_NEEDING_A_NOTE } from "@/services/follow-ups/completion";
 
 /**
  * Recording what happened.
@@ -41,7 +42,11 @@ const RARER: readonly OutcomeChoice[] = [
   { outcome: "not_interested", label: "They'd rather not hear from us", next: "Follow-up for {name} stops, and their other open tasks are cancelled." },
   { outcome: "wrong_details", label: "The number or email is wrong", next: "We'll note the try and ask for their details to be checked." },
   { outcome: "needs_another_team", label: "Somebody else should help", next: "This follow-up closes as passed to another team." },
-  { outcome: "other", label: "Something else happened", next: "This follow-up closes with your note. Nothing else is created." },
+  {
+    outcome: "other",
+    label: "Something else happened",
+    next: "This follow-up closes with your note. It doesn't count as a try to reach {name}, and nothing else is set up, so decide the next step.",
+  },
 ];
 
 interface CompleteTaskDialogProps {
@@ -109,13 +114,16 @@ function OutcomeForm({
   const [note, setNote] = useState("");
 
   const chosen = [...COMMON, ...RARER].find((choice) => choice.outcome === outcome) ?? COMMON[0];
+  // "Something else" means nothing without saying what.
+  const noteNeeded = OUTCOMES_NEEDING_A_NOTE.includes(outcome);
+  const noteMissing = noteNeeded && !note.trim();
 
   return (
     <form
       className="flex min-h-0 flex-1 flex-col"
       onSubmit={async (event) => {
         event.preventDefault();
-        if (saving) return;
+        if (saving || noteMissing) return;
         // One tap, one save: the button stays disabled until the command returns.
         setSaving(true);
         try {
@@ -151,10 +159,10 @@ function OutcomeForm({
           {chosen.next.replace("{name}", firstName)}
         </p>
 
-        {showNote ? (
+        {showNote || noteNeeded ? (
           <div className="space-y-1.5">
             <label htmlFor="outcome-note" className="text-sm font-medium">
-              Note for the next person
+              {noteNeeded ? "What happened" : "Note for the next person"}
             </label>
             <Textarea
               id="outcome-note"
@@ -162,6 +170,9 @@ function OutcomeForm({
               value={note}
               onChange={(event) => setNote(event.target.value)}
               rows={3}
+              maxLength={500}
+              required={noteNeeded}
+              aria-invalid={noteMissing || undefined}
             />
             <p className="text-xs text-muted-foreground">
               Shown on their timeline. Keep private pastoral detail in Pastoral care.
@@ -182,7 +193,7 @@ function OutcomeForm({
         <Button type="button" variant="ghost" size="lg" onClick={onCancel}>
           Cancel
         </Button>
-        <Button type="submit" size="lg" className="flex-1" disabled={saving}>
+        <Button type="submit" size="lg" className="flex-1" disabled={saving || noteMissing}>
           {saving ? "Saving…" : "Save"}
         </Button>
       </div>

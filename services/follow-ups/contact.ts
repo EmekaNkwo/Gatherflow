@@ -1,5 +1,38 @@
 import type { ContactMethod } from "@/types/common";
+import type { FollowUpTaskType } from "@/types/follow-up";
 import type { Person } from "@/types/person";
+
+/**
+ * Consent, in one place: somebody may be contacted only when they agreed to
+ * it and have not since opted out. Automation rules, task creation and the
+ * follow-up cards all ask this, so they can never disagree.
+ */
+export function canBeContacted(person: Pick<Person, "contact">): boolean {
+  return person.contact.permissionGranted && !person.contact.optedOut;
+}
+
+/**
+ * Follow-ups that never message anybody, so need no permission to contact:
+ * a hello in person at the next service, pastoral care (which has its own
+ * rules), and membership orientation, which the person asked about themselves.
+ */
+const NO_PERMISSION_NEEDED: readonly FollowUpTaskType[] = [
+  "say_hello",
+  "pastoral_contact",
+  "membership_orientation",
+];
+
+export function needsContactPermission(type: FollowUpTaskType): boolean {
+  return !NO_PERMISSION_NEEDED.includes(type);
+}
+
+/** Task types that can be set up for this person, given their consent. */
+export function allowedTaskTypes(
+  person: Pick<Person, "contact">,
+  types: readonly FollowUpTaskType[],
+): FollowUpTaskType[] {
+  return canBeContacted(person) ? [...types] : types.filter((type) => !needsContactPermission(type));
+}
 
 /**
  * The ways a volunteer can reach somebody straight from a follow-up card.
@@ -48,7 +81,7 @@ function linkFor(method: ContactMethod, person: Person): ContactLink | null {
 
 export function contactOptions(person: Person): ContactOptions {
   if (person.contact.optedOut) return { kind: "refused", reason: "Asked not to be contacted" };
-  if (!person.contact.permissionGranted) return { kind: "refused", reason: "Hasn't agreed to be contacted" };
+  if (!canBeContacted(person)) return { kind: "refused", reason: "Hasn't agreed to be contacted" };
 
   const order: ContactMethod[] = [person.contact.preferredMethod, "phone", "email"];
   const links = [...new Set(order)]

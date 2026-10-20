@@ -5,11 +5,12 @@ import Link from "next/link";
 import { CalendarPlusIcon, ChevronRightIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CreateSessionDialog } from "@/components/attendance/session-dialogs";
+import { SessionList } from "@/components/attendance/session-list";
 import { PageHeader, PageShell, Section } from "@/components/shared/page-header";
-import { formatDisplayDate, toIsoDate } from "@/lib/dates";
+import { toIsoDate } from "@/lib/dates";
 import { SERVICE_TYPE_LABELS } from "@/types/attendance";
 import { WEEKDAYS, type Weekday } from "@/types/group";
-import { useAttendance } from "@/hooks/useAttendance";
+import { RECENT_SERVICE_WEEKS, useAttendance } from "@/hooks/useAttendance";
 import { useGroupSchedule } from "@/hooks/useGroups";
 import { useSnapshot } from "@/hooks/use-church-data";
 import { useRole } from "@/hooks/useRole";
@@ -30,8 +31,19 @@ const ROW = "flex min-h-14 items-center gap-3 px-5 py-3";
 export default function ServicesPage() {
   const snapshot = useSnapshot();
   const now = useNow();
-  const { can } = useRole();
-  const { upcoming, addSession } = useAttendance();
+  const { can, canRun } = useRole();
+  const { upcoming, past, summaries, addSession, updateSession, deleteSession } = useAttendance();
+  const today = toIsoDate(now);
+  const canManage = canRun("session.create", {
+    name: "Service",
+    date: today,
+    startTime: "10:00",
+    type: "sunday_service",
+  });
+  const totals = new Map(summaries.map((entry) => [entry.session.id, entry.total]));
+  const withTotals = (sessions: typeof upcoming) =>
+    sessions.map((session) => ({ session, total: totals.get(session.id) ?? 0 }));
+  const happened = past.filter((session) => session.date < today);
   const groups = useGroupSchedule();
   const [creating, setCreating] = useState(false);
 
@@ -46,7 +58,7 @@ export default function ServicesPage() {
         title="Services & events"
         description="When the church meets, and what’s coming up."
         actions={
-          can("attendance.write") ? (
+          canManage ? (
             <Button size="lg" className="gap-1.5 rounded-full" onClick={() => setCreating(true)}>
               <CalendarPlusIcon />
               Add a service
@@ -57,29 +69,36 @@ export default function ServicesPage() {
 
       <Section title="Coming up">
         {upcoming.length ? (
-          <ul className="divide-y overflow-hidden rounded-3xl border bg-card">
-            {upcoming.map((session) => (
-              <li key={session.id}>
-                <Link href={`/attendance/${session.id}`} className={`${ROW} hover:bg-muted/50`}>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate font-medium">{session.name}</span>
-                    <span className="block text-sm text-muted-foreground">
-                      {formatDisplayDate(session.date)} at {session.startTime}
-                    </span>
-                  </span>
-                  <ChevronRightIcon className="size-5 shrink-0 text-muted-foreground" />
-                </Link>
-              </li>
-            ))}
-          </ul>
+          <SessionList
+            entries={withTotals(upcoming)}
+            today={today}
+            canManage={canManage}
+            onUpdate={updateSession}
+            onDelete={deleteSession}
+          />
         ) : (
           <p className="rounded-2xl bg-muted px-5 py-6 text-muted-foreground">
-            {can("attendance.write")
+            {canManage
               ? "Nothing coming up yet. Add a service and it will be ready for check-in."
               : "Nothing coming up yet. When a service is added, it will be ready for check-in."}
           </p>
         )}
       </Section>
+
+      {happened.length ? (
+        <Section
+          title="Recent services"
+          description={`The last ${RECENT_SERVICE_WEEKS} weeks, including any with nobody checked in yet.`}
+        >
+          <SessionList
+            entries={withTotals(happened)}
+            today={today}
+            canManage={canManage}
+            onUpdate={updateSession}
+            onDelete={deleteSession}
+          />
+        </Section>
+      ) : null}
 
       <Section
         title="Every week"
@@ -144,7 +163,7 @@ export default function ServicesPage() {
       <CreateSessionDialog
         open={creating}
         onOpenChange={setCreating}
-        today={toIsoDate(now)}
+        today={today}
         onConfirm={async (input) => {
           const outcome = await addSession(input);
           if (outcome.ok) setCreating(false);

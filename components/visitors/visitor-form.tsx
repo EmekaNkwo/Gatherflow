@@ -1,8 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { type BaseSyntheticEvent, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { useForm, useWatch } from "react-hook-form";
+import { Controller, useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { ChevronDownIcon } from "lucide-react";
 import { cn } from "cn";
@@ -10,14 +10,18 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
+import { SelectField } from "@/components/shared/select-field";
 import { ConsentChoice } from "@/components/people/responsive-dialog";
 import { formatDisplayDate, toIsoDate } from "@/lib/dates";
 import { CONTACT_METHODS, CONTACT_METHOD_LABELS } from "@/types/common";
 import { VISITOR_SOURCES, VISITOR_SOURCE_LABELS } from "@/types/person";
 import { INTEREST_POOL } from "@/data/seed/names";
-import { visitorRegistrationSchema, type VisitorRegistrationValues } from "@/services/visitors/schema";
+import {
+  VISITOR_FIELD_LIMITS,
+  visitorRegistrationSchema,
+  type VisitorRegistrationValues,
+} from "@/services/visitors/schema";
 import { useRole } from "@/hooks/useRole";
 import { useNow } from "@/hooks/use-now";
 import { useSnapshot } from "@/hooks/use-church-data";
@@ -27,6 +31,16 @@ import { DuplicateSuggestions } from "./duplicate-suggestions";
 /** Fields that live under "More details"; an error in one opens it. */
 const DETAIL_FIELDS = ["preferredName", "source", "assignedTo", "interests", "notes"] as const;
 
+const CONTACT_METHOD_OPTIONS = CONTACT_METHODS.map((method) => ({
+  value: method,
+  label: CONTACT_METHOD_LABELS[method],
+}));
+
+const VISITOR_SOURCE_OPTIONS = VISITOR_SOURCES.map((source) => ({
+  value: source,
+  label: VISITOR_SOURCE_LABELS[source],
+}));
+
 /**
  * Adding a visitor with time to spare.
  *
@@ -34,23 +48,43 @@ const DETAIL_FIELDS = ["preferredName", "source", "assignedTo", "interests", "no
  * under "More details". The component only renders and collects: validation
  * comes from the shared schema and the record is created by the visitor
  * service through the hook.
+ *
+ * On its own page it navigates as a page does. Inside the welcome modal the
+ * modal passes `onDone` (close, then go to the new record) and `onCancel`.
  */
-export function VisitorForm() {
+interface VisitorFormProps {
+  /** Check them in to this service, e.g. the one being checked in to. */
+  defaultSessionId?: string;
+  /** Called before going to the new or matched record. */
+  onDone?: () => void;
+  /** Replaces the default Cancel, which goes back a page. */
+  onCancel?: () => void;
+}
+
+export function VisitorForm({ defaultSessionId, onDone, onCancel }: VisitorFormProps = {}) {
   const router = useRouter();
   const now = useNow();
   const snapshot = useSnapshot();
-  const { assignableTeam } = useRole();
+  const { assignableTeam, can, currentMember } = useRole();
   const { register: registerVisitor, findDuplicates, recordAnotherVisit } = useVisitors();
   const [more, setMore] = useState(false);
+  // Synchronous lock against a double tap: both clicks arrive before a re-render.
+  const saving = useRef(false);
 
-  const recentSessions = useMemo(
-    () =>
-      [...snapshot.sessions]
-        .filter((session) => session.date <= toIsoDate(now))
-        .sort((left, right) => (left.date < right.date ? 1 : -1))
-        .slice(0, 8),
-    [snapshot.sessions, now],
-  );
+  // Somebody who can't hand out follow-ups may only take one on themselves.
+  const helpers = can("tasks.assign")
+    ? assignableTeam
+    : assignableTeam.filter((member) => member.id === currentMember?.id);
+
+  const recentSessions = useMemo(() => {
+    const recent = [...snapshot.sessions]
+      .filter((session) => session.date <= toIsoDate(now))
+      .sort((left, right) => (left.date < right.date ? 1 : -1))
+      .slice(0, 8);
+    // A service asked for by the caller is offered even when it is upcoming.
+    const requested = snapshot.sessions.find((session) => session.id === defaultSessionId);
+    return requested && !recent.some((session) => session.id === requested.id) ? [requested, ...recent] : recent;
+  }, [snapshot.sessions, now, defaultSessionId]);
 
   const form = useForm<VisitorRegistrationValues>({
     resolver: zodResolver(visitorRegistrationSchema),
@@ -61,7 +95,7 @@ export function VisitorForm() {
       phone: "",
       email: "",
       visitDate: toIsoDate(now),
-      sessionId: recentSessions[0]?.id ?? "",
+      sessionId: defaultSessionId ?? recentSessions[0]?.id ?? "",
       source: "invitation",
       assignedTo: "",
       preferredMethod: "whatsapp",
@@ -95,15 +129,18 @@ export function VisitorForm() {
   const detailsOpen = more || DETAIL_FIELDS.some((field) => Boolean(errors[field]));
   const visitOpen = Boolean(errors.visitDate);
 
-  const onSubmit = form.handleSubmit(async (values) => {
+  const save = form.handleSubmit(async (values) => {
+    // A chosen service decides the date of the visit; there is no second,
+    // separate date that could disagree with it.
+    const session = recentSessions.find((entry) => entry.id === values.sessionId);
     const outcome = await registerVisitor({
       firstName: values.firstName,
       lastName: values.lastName,
       preferredName: values.preferredName || undefined,
       phone: values.phone || undefined,
       email: values.email || undefined,
-      visitDate: values.visitDate,
-      sessionId: values.sessionId || undefined,
+      visitDate: session?.date ?? values.visitDate,
+      sessionId: session?.id,
       source: values.source,
       assignedTo: values.assignedTo || undefined,
       preferredMethod: values.preferredMethod,
@@ -113,19 +150,34 @@ export function VisitorForm() {
       returningVisitor: values.returningVisitor ?? false,
     });
 
-    if (outcome.ok) {
-      router.push(`/visitors/${outcome.value.personId}`);
-    }
+    if (outcome.ok) open(outcome.value.personId);
   });
+
+  const onSubmit = async (event?: BaseSyntheticEvent) => {
+    event?.preventDefault();
+    if (saving.current) return;
+    saving.current = true;
+    try {
+      await save();
+    } finally {
+      saving.current = false;
+    }
+  };
+
+  const open = (personId: string) => {
+    onDone?.();
+    router.push(`/visitors/${personId}`);
+  };
 
   const useExisting = async (personId: string) => {
     const sessionId = form.getValues("sessionId");
     if (!sessionId) {
-      router.push(`/visitors/${personId}`);
+      open(personId);
       return;
     }
     const outcome = await recordAnotherVisit(personId, sessionId);
-    if (outcome.ok) router.push(`/visitors/${personId}`);
+    // Already checked in to this service: the visit is recorded, so go to them.
+    if (outcome.ok || outcome.code === "duplicate") open(personId);
   };
 
   return (
@@ -144,23 +196,34 @@ export function VisitorForm() {
           <span className="text-sm font-medium text-primary">Change</span>
         </summary>
         <FieldGroup className="mt-3 gap-4 sm:grid sm:grid-cols-2">
-          <Field>
-            <FieldLabel htmlFor="sessionId">Service</FieldLabel>
-            <NativeSelect className="w-full" id="sessionId" {...form.register("sessionId")}>
-              <NativeSelectOption value="">Don&apos;t check them in</NativeSelectOption>
-              {recentSessions.map((session) => (
-                <NativeSelectOption key={session.id} value={session.id}>
-                  {session.name} · {formatDisplayDate(session.date)}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-            <FieldDescription>Choosing a service checks them in, so visit counts stay real.</FieldDescription>
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="visitDate">Date they came</FieldLabel>
-            <Input id="visitDate" type="date" className="h-11" {...form.register("visitDate")} />
-            <FieldError errors={[errors.visitDate]} />
-          </Field>
+          <Controller
+            control={form.control}
+            name="sessionId"
+            render={({ field, fieldState }) => (
+              <SelectField
+                id="sessionId"
+                label="Service"
+                description="Choosing a service checks them in, so visit counts stay real."
+                value={field.value ?? ""}
+                onValueChange={field.onChange}
+                error={fieldState.error?.message}
+                options={[
+                  { value: "", label: "Don't check them in" },
+                  ...recentSessions.map((session) => ({
+                    value: session.id,
+                    label: `${session.name} · ${formatDisplayDate(session.date)}`,
+                  })),
+                ]}
+              />
+            )}
+          />
+          {chosenSession ? null : (
+            <Field>
+              <FieldLabel htmlFor="visitDate">Date they came</FieldLabel>
+              <Input id="visitDate" type="date" className="h-11" max={toIsoDate(now)} {...form.register("visitDate")} />
+              <FieldError errors={[errors.visitDate]} />
+            </Field>
+          )}
         </FieldGroup>
       </details>
 
@@ -169,12 +232,12 @@ export function VisitorForm() {
       <FieldGroup className="gap-4 sm:grid sm:grid-cols-2">
         <Field>
           <FieldLabel htmlFor="firstName">First name</FieldLabel>
-          <Input id="firstName" className="h-12 text-base" autoComplete="given-name" {...form.register("firstName")} />
+          <Input id="firstName" className="h-12 text-base" autoComplete="given-name" maxLength={VISITOR_FIELD_LIMITS.name} {...form.register("firstName")} />
           <FieldError errors={[errors.firstName]} />
         </Field>
         <Field>
           <FieldLabel htmlFor="lastName">Last name</FieldLabel>
-          <Input id="lastName" className="h-12 text-base" autoComplete="family-name" {...form.register("lastName")} />
+          <Input id="lastName" className="h-12 text-base" autoComplete="family-name" maxLength={VISITOR_FIELD_LIMITS.name} {...form.register("lastName")} />
           <FieldError errors={[errors.lastName]} />
         </Field>
         <Field>
@@ -184,6 +247,7 @@ export function VisitorForm() {
             className="h-12 text-base"
             inputMode="tel"
             autoComplete="tel"
+            maxLength={VISITOR_FIELD_LIMITS.phone}
             {...form.register("phone")}
           />
           <FieldError errors={[errors.phone]} />
@@ -195,6 +259,7 @@ export function VisitorForm() {
             className="h-12 text-base"
             type="email"
             autoComplete="email"
+            maxLength={VISITOR_FIELD_LIMITS.email}
             {...form.register("email")}
           />
           <FieldError errors={[errors.email]} />
@@ -216,17 +281,21 @@ export function VisitorForm() {
         </ConsentChoice>
         {/* How to reach them only matters once they've said yes. */}
         {watched.permissionGranted ? (
-          <Field className="sm:max-w-xs">
-            <FieldLabel htmlFor="preferredMethod">Best way to reach them</FieldLabel>
-            <NativeSelect className="w-full" id="preferredMethod" {...form.register("preferredMethod")}>
-              {CONTACT_METHODS.map((method) => (
-                <NativeSelectOption key={method} value={method}>
-                  {CONTACT_METHOD_LABELS[method]}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
-            <FieldError errors={[errors.preferredMethod]} />
-          </Field>
+          <Controller
+            control={form.control}
+            name="preferredMethod"
+            render={({ field, fieldState }) => (
+              <SelectField
+                id="preferredMethod"
+                label="Best way to reach them"
+                className="sm:max-w-xs"
+                value={field.value ?? ""}
+                onValueChange={field.onChange}
+                error={fieldState.error?.message}
+                options={CONTACT_METHOD_OPTIONS}
+              />
+            )}
+          />
         ) : null}
       </div>
 
@@ -245,29 +314,48 @@ export function VisitorForm() {
             <FieldGroup className="gap-4 sm:grid sm:grid-cols-2">
               <Field>
                 <FieldLabel htmlFor="preferredName">What they like to be called</FieldLabel>
-                <Input id="preferredName" className="h-11" {...form.register("preferredName")} />
+                <Input
+                  id="preferredName"
+                  className="h-11"
+                  maxLength={VISITOR_FIELD_LIMITS.preferredName}
+                  {...form.register("preferredName")}
+                />
+                <FieldError errors={[errors.preferredName]} />
               </Field>
-              <Field>
-                <FieldLabel htmlFor="source">How they found us</FieldLabel>
-                <NativeSelect className="w-full" id="source" {...form.register("source")}>
-                  {VISITOR_SOURCES.map((source) => (
-                    <NativeSelectOption key={source} value={source}>
-                      {VISITOR_SOURCE_LABELS[source]}
-                    </NativeSelectOption>
-                  ))}
-                </NativeSelect>
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="assignedTo">Who will say hello</FieldLabel>
-                <NativeSelect className="w-full" id="assignedTo" {...form.register("assignedTo")}>
-                  <NativeSelectOption value="">Let the coordinator decide</NativeSelectOption>
-                  {assignableTeam.map((member) => (
-                    <NativeSelectOption key={member.id} value={member.id}>
-                      {member.name}
-                    </NativeSelectOption>
-                  ))}
-                </NativeSelect>
-              </Field>
+              <Controller
+                control={form.control}
+                name="source"
+                render={({ field, fieldState }) => (
+                  <SelectField
+                    id="source"
+                    label="How they found us"
+                    value={field.value ?? ""}
+                    onValueChange={field.onChange}
+                    error={fieldState.error?.message}
+                    options={VISITOR_SOURCE_OPTIONS}
+                  />
+                )}
+              />
+              <Controller
+                control={form.control}
+                name="assignedTo"
+                render={({ field, fieldState }) => (
+                  <SelectField
+                    id="assignedTo"
+                    label="Who will say hello"
+                    value={field.value ?? ""}
+                    onValueChange={field.onChange}
+                    error={fieldState.error?.message}
+                    options={[
+                      { value: "", label: "Let the coordinator decide" },
+                      ...helpers.map((member) => ({
+                        value: member.id,
+                        label: member.id === currentMember?.id ? `Me (${member.name})` : member.name,
+                      })),
+                    ]}
+                  />
+                )}
+              />
             </FieldGroup>
 
             <label
@@ -313,7 +401,7 @@ export function VisitorForm() {
 
             <Field>
               <FieldLabel htmlFor="notes">Notes for whoever says hello (optional)</FieldLabel>
-              <Textarea id="notes" rows={3} {...form.register("notes")} />
+              <Textarea id="notes" rows={3} maxLength={VISITOR_FIELD_LIMITS.notes} {...form.register("notes")} />
               <FieldDescription>
                 Practical things only. Private pastoral detail belongs in Pastoral care.
               </FieldDescription>
@@ -329,10 +417,11 @@ export function VisitorForm() {
           size="lg"
           className="h-12 flex-1 rounded-full text-base sm:flex-none sm:px-8"
           disabled={form.formState.isSubmitting}
+          aria-busy={form.formState.isSubmitting}
         >
-          Add {firstName.trim() || "visitor"}
+          {form.formState.isSubmitting ? "Adding…" : `Add ${firstName.trim() || "visitor"}`}
         </Button>
-        <Button type="button" variant="ghost" size="lg" className="rounded-full" onClick={() => router.back()}>
+        <Button type="button" variant="ghost" size="lg" className="rounded-full" onClick={() => (onCancel ? onCancel() : router.back())}>
           Cancel
         </Button>
       </div>

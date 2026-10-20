@@ -148,14 +148,24 @@
     @apply font-sans;
     color-scheme: light dark;
   }
-  /* Fraunces with its soft corners: warm, not churchy. */
+  /* Nunito's rounded letters: soft and friendly, not churchy. */
   h1,
   h2,
   .font-heading {
     font-family: var(--font-display);
-    font-variation-settings: "SOFT" 100, "WONK" 0;
     letter-spacing: -0.01em;
   }
+}
+
+/*
+ * Nunito reads best bold. Set here, outside the cascade layers, so it wins
+ * over the `font-medium` many headings carry from the serif they replaced —
+ * one weight for every heading, decided in one place.
+ */
+h1,
+h2,
+.font-heading {
+  font-weight: 750;
 }
 
 @media (prefers-reduced-motion: reduce) {

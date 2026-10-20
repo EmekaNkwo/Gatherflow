@@ -6,13 +6,14 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import { EmptyState, RestrictedState } from "@/components/shared/empty-state";
 import { PageHeader, PageShell, Section } from "@/components/shared/page-header";
-import { renderTemplate } from "@/services/communications/template-engine";
+import { SelectField, type SelectOption } from "@/components/shared/select-field";
+import { renderTemplate, strayBraces } from "@/services/communications/template-engine";
+import { useSessionStore } from "@/stores/session-store";
 import { CONTACT_METHODS, CONTACT_METHOD_LABELS, type ContactMethod } from "@/types/common";
 import {
   TEMPLATE_CATEGORY_LABELS,
@@ -26,6 +27,10 @@ import { useSnapshot } from "@/hooks/use-church-data";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 const CATEGORIES = Object.keys(TEMPLATE_CATEGORY_LABELS) as TemplateCategory[];
+const CATEGORY_OPTIONS: SelectOption[] = CATEGORIES.map((option) => ({
+  value: option,
+  label: TEMPLATE_CATEGORY_LABELS[option],
+}));
 
 interface TemplateValues {
   name: string;
@@ -34,7 +39,17 @@ interface TemplateValues {
   body: string;
 }
 
-type Preview = (body: string) => { text: string; missing: readonly string[]; sampleName: string } | null;
+type Preview = (body: string) => {
+  text: string;
+  missing: readonly string[];
+  unknown: readonly string[];
+  stray: readonly string[];
+  sampleName: string;
+} | null;
+
+/** Mirrors the server's limits, so nobody types past them. */
+const NAME_MAX_LENGTH = 80;
+const BODY_MAX_LENGTH = 5_000;
 
 function channelList(channels: readonly ContactMethod[]): string {
   return channels.map((channel) => CONTACT_METHOD_LABELS[channel]).join(", ");
@@ -46,7 +61,8 @@ function channelList(channels: readonly ContactMethod[]): string {
  */
 export default function TemplatesPage() {
   const snapshot = useSnapshot();
-  const { can } = useRole();
+  const { can, canRun } = useRole();
+  const teamMemberId = useSessionStore((state) => state.teamMemberId);
   const isMobile = useIsMobile();
   const { templates, addTemplate, editTemplate, removeTemplate } = useCommunications();
 
@@ -62,18 +78,30 @@ export default function TemplatesPage() {
     );
   }
 
+  // Template changes are church-wide, so only roles that may manage them see
+  // the controls. No template command depends on who owns what, so any id
+  // answers the question.
+  const canManage = canRun("template.delete", { templateId: "" });
+  // Signed the way a real message would be: by whoever is writing it.
+  const senderName = snapshot.team.find((member) => member.id === teamMemberId)?.name ?? "the church team";
   const sample = snapshot.people.find((person) => person.visitor) ?? snapshot.people[0];
   const preview: Preview = (body) => {
     if (!sample) return null;
     const rendered = renderTemplate(body, {
       person: sample,
       churchName: snapshot.settings.churchName,
-      senderName: "Grace Mensah",
+      senderName,
       serviceDate: sample.visitor?.firstVisitDate,
       serviceName: "our Sunday service",
       groupName: snapshot.groups[0]?.name,
     });
-    return { text: rendered.text, missing: rendered.missing, sampleName: sample.firstName };
+    return {
+      text: rendered.text,
+      missing: rendered.missing,
+      unknown: rendered.unknown,
+      stray: strayBraces(body),
+      sampleName: sample.firstName,
+    };
   };
 
   const current = templates.find((template) => template.id === openId) ?? null;
@@ -92,10 +120,12 @@ export default function TemplatesPage() {
         title="Message templates"
         description="Ready-made wording the team can start from. Names and dates fill in from each person's record."
         actions={
-          <Button size="lg" className="gap-2 rounded-full" onClick={() => setMode("new")}>
-            <PlusIcon />
-            New template
-          </Button>
+          canManage ? (
+            <Button size="lg" className="gap-2 rounded-full" onClick={() => setMode("new")}>
+              <PlusIcon />
+              New template
+            </Button>
+          ) : null
         }
       />
 
@@ -134,7 +164,10 @@ export default function TemplatesPage() {
           </Section>
         ))
       ) : (
-        <EmptyState title="No templates yet" description="Add the wording your team uses most, and it will be ready whenever someone prepares a message." />
+        <EmptyState
+          title="No templates yet"
+          description="Add the wording your team uses most, and it will be ready whenever someone prepares a message."
+        />
       )}
 
       <Sheet open={mode !== null} onOpenChange={(open) => !open && close()}>
@@ -150,11 +183,12 @@ export default function TemplatesPage() {
             <TemplateView
               template={current}
               preview={preview}
+              canManage={canManage}
               onEdit={() => setMode("edit")}
               onDelete={() => setDeleting(current)}
             />
           ) : null}
-          {mode === "edit" && current ? (
+          {mode === "edit" && current && canManage ? (
             <TemplateForm
               key={current.id}
               template={current}
@@ -166,7 +200,7 @@ export default function TemplatesPage() {
               }}
             />
           ) : null}
-          {mode === "new" ? (
+          {mode === "new" && canManage ? (
             <TemplateForm
               key="new"
               template={null}
@@ -211,6 +245,18 @@ function PreviewBox({ preview, body }: { preview: Preview; body: string }) {
           visible, so a message is never sent half-written.
         </p>
       ) : null}
+      {shown.unknown.length ? (
+        <p className="text-sm text-destructive">
+          {shown.unknown.map((entry) => `{{${entry}}}`).join(", ")} isn&apos;t a blank GatherFlow knows. Use one of the
+          blanks listed under the message, spelt exactly.
+        </p>
+      ) : null}
+      {shown.stray.length ? (
+        <p className="text-sm text-destructive">
+          {shown.stray.join(", ")} would be sent exactly as typed. Write blanks like {"{{firstName}}"}, or remove the
+          braces.
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -218,11 +264,13 @@ function PreviewBox({ preview, body }: { preview: Preview; body: string }) {
 function TemplateView({
   template,
   preview,
+  canManage,
   onEdit,
   onDelete,
 }: {
   template: MessageTemplate;
   preview: Preview;
+  canManage: boolean;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -243,18 +291,20 @@ function TemplateView({
           </pre>
         </div>
       </div>
-      <div className="mt-auto flex flex-wrap gap-2 border-t px-5 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] md:px-6">
-        <Button size="lg" className="gap-2 rounded-full" onClick={onEdit}>
-          <PencilIcon />
-          Edit
-        </Button>
-        {!template.builtIn ? (
-          <Button size="lg" variant="ghost" className="gap-2 rounded-full text-destructive" onClick={onDelete}>
-            <Trash2Icon />
-            Delete
+      {canManage ? (
+        <div className="mt-auto flex flex-wrap gap-2 border-t px-5 pt-3 pb-[max(1rem,env(safe-area-inset-bottom))] md:px-6">
+          <Button size="lg" className="gap-2 rounded-full" onClick={onEdit}>
+            <PencilIcon />
+            Edit
           </Button>
-        ) : null}
-      </div>
+          {!template.builtIn ? (
+            <Button size="lg" variant="ghost" className="gap-2 rounded-full text-destructive" onClick={onDelete}>
+              <Trash2Icon />
+              Delete
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
     </>
   );
 }
@@ -268,12 +318,20 @@ function TemplateForm({
   template: MessageTemplate | null;
   preview: Preview;
   onCancel: () => void;
-  onConfirm: (values: TemplateValues) => void;
+  onConfirm: (values: TemplateValues) => Promise<void>;
 }) {
   const [name, setName] = useState(template?.name ?? "");
   const [category, setCategory] = useState<TemplateCategory>(template?.category ?? "general_check_in");
   const [channels, setChannels] = useState<ContactMethod[]>(template ? [...template.channels] : ["whatsapp"]);
   const [body, setBody] = useState(template?.body ?? "");
+  const [saving, setSaving] = useState(false);
+
+  async function save() {
+    if (saving) return;
+    setSaving(true);
+    await onConfirm({ name, category, channels, body });
+    setSaving(false);
+  }
 
   return (
     <>
@@ -286,24 +344,25 @@ function TemplateForm({
       <div className="space-y-5 px-5 py-3 md:px-6">
         <Field>
           <FieldLabel htmlFor="template-name">Name</FieldLabel>
-          <Input id="template-name" className="h-11" value={name} onChange={(event) => setName(event.target.value)} />
+          <Input
+            id="template-name"
+            className="h-11"
+            value={name}
+            maxLength={NAME_MAX_LENGTH}
+            onChange={(event) => setName(event.target.value)}
+          />
+          <FieldDescription>
+            {name.length} of {NAME_MAX_LENGTH} characters.
+          </FieldDescription>
         </Field>
 
-        <Field>
-          <FieldLabel htmlFor="template-category">What it&apos;s for</FieldLabel>
-          <NativeSelect
-            className="w-full"
-            id="template-category"
-            value={category}
-            onChange={(event) => setCategory(event.target.value as TemplateCategory)}
-          >
-            {CATEGORIES.map((option) => (
-              <NativeSelectOption key={option} value={option}>
-                {TEMPLATE_CATEGORY_LABELS[option]}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
-        </Field>
+        <SelectField
+          id="template-category"
+          label="What it's for"
+          value={category}
+          onValueChange={(value) => setCategory(value as TemplateCategory)}
+          options={CATEGORY_OPTIONS}
+        />
 
         <Field>
           <FieldLabel>Send it by</FieldLabel>
@@ -329,9 +388,16 @@ function TemplateForm({
 
         <Field>
           <FieldLabel htmlFor="template-body">Message</FieldLabel>
-          <Textarea id="template-body" rows={7} value={body} onChange={(event) => setBody(event.target.value)} />
+          <Textarea
+            id="template-body"
+            rows={7}
+            value={body}
+            maxLength={BODY_MAX_LENGTH}
+            onChange={(event) => setBody(event.target.value)}
+          />
           <FieldDescription>
-            Blanks you can use: {TEMPLATE_PLACEHOLDERS.map((entry) => `{{${entry}}}`).join(", ")}
+            Blanks you can use: {TEMPLATE_PLACEHOLDERS.map((entry) => `{{${entry}}}`).join(", ")}. {body.length} of{" "}
+            {BODY_MAX_LENGTH} characters.
           </FieldDescription>
         </Field>
 
@@ -341,10 +407,10 @@ function TemplateForm({
         <Button
           size="lg"
           className="rounded-full"
-          disabled={!name.trim() || !body.trim() || !channels.length}
-          onClick={() => onConfirm({ name, category, channels, body })}
+          disabled={saving || !name.trim() || !body.trim() || !channels.length}
+          onClick={() => void save()}
         >
-          Save template
+          {saving ? "Saving…" : "Save template"}
         </Button>
         <Button size="lg" variant="ghost" className="rounded-full" onClick={onCancel}>
           Cancel

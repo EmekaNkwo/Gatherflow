@@ -1,8 +1,9 @@
 import { expect, test, type APIRequestContext, type Browser, type Page } from "@playwright/test";
 import { eq } from "drizzle-orm";
 import { createDatabase, type Database } from "@/server/db/client";
-import { churchMembers, churches, people, user } from "@/server/db/schema";
+import { churchMembers, churches, people, requestBudgets, user } from "@/server/db/schema";
 import { REMOTE_E2E } from "../playwright.config";
+import { choose } from "./select";
 
 /**
  * A church from nothing: an account signs up and gets an empty church,
@@ -30,6 +31,9 @@ test.describe.configure({ mode: "serial" });
 
 test.beforeAll(async ({ request }) => {
   db = createDatabase({ connectionString: process.env.TEST_DATABASE_URL as string, max: 2 });
+  // Request budgets are shared through the database; start each run with
+  // none spent, so an earlier run (or a manual check) cannot refuse this one.
+  await db.delete(requestBudgets);
   await request.delete(`${REMOTE_E2E.stubURL}/sent`);
 });
 
@@ -92,7 +96,9 @@ test("signing up creates an account and an empty church with the founder as admi
 test("registers a first visitor, follows up, and confirms membership", async ({ page }) => {
   await signIn(page, admin);
 
+  // The old address opens the welcome modal on its full form.
   await page.goto("/visitors/new");
+  await expect(page.getByRole("dialog", { name: "Welcome someone new" })).toBeVisible();
   await page.fill("#firstName", "Ada");
   await page.fill("#lastName", "Testcase");
   await page.fill("#phone", "+44 7700 900555");
@@ -104,7 +110,7 @@ test("registers a first visitor, follows up, and confirms membership", async ({ 
   await expect(page.getByRole("heading", { name: "Ada Testcase" })).toBeVisible();
   await expect(page.getByText("Send a welcome message")).toBeVisible();
 
-  await page.getByLabel("Who's looking after Ada").selectOption({ index: 1 });
+  await choose(page, page.getByLabel("Who's looking after Ada"), { index: 1 });
   await expect(page.getByText("Waiting for a hello")).toBeVisible();
 
   await page.getByRole("button", { name: /^Done: record what happened with Ada/ }).click();
@@ -128,9 +134,9 @@ test("invites a volunteer, who joins through the link and sees only their own wo
   await page.getByRole("tab", { name: "Team" }).click();
 
   await page.fill("#invite-email", volunteer.email);
-  await page.selectOption("#invite-role", "volunteer");
+  await choose(page, page.locator("#invite-role"), "Volunteer");
   await page.getByRole("button", { name: "Send invitation" }).click();
-  await expect(page.getByText(`Emailed to ${volunteer.email}.`)).toBeVisible();
+  await expect(page.getByText(`Invitation emailed to ${volunteer.email}`)).toBeVisible();
   const shown = (await page.locator("code").first().textContent())?.trim();
   expect(shown).toMatch(/\/accept-invite\?token=/);
   await expect(page.getByText(volunteer.email).first()).toBeVisible();
@@ -167,7 +173,7 @@ test("invites a volunteer, who joins through the link and sees only their own wo
   await page.reload();
   await page.getByRole("tab", { name: "Team" }).click();
   await expect(page.getByText(volunteer.email).first()).toBeVisible();
-  await page.getByLabel(`Role for ${volunteer.email}`).selectOption("follow_up_coordinator");
+  await choose(page, page.getByLabel(`Role for ${volunteer.email}`), "Follow-up coordinator");
   await expect(page.getByText(/is now follow-up coordinator/)).toBeVisible();
 
   const [account] = await db.select({ id: user.id }).from(user).where(eq(user.email, volunteer.email));
@@ -179,8 +185,9 @@ test("invites a volunteer, who joins through the link and sees only their own wo
 
   // And the audit trail says so.
   await page.getByRole("tab", { name: "Audit" }).click();
-  await expect(page.getByText("invitation.create")).toBeVisible();
-  await expect(page.getByText("membership.role")).toBeVisible();
+  await expect(page.getByText("Invited someone").first()).toBeVisible();
+  await expect(page.getByText("Changed an account's role").first()).toBeVisible();
+  await expect(page.getByText(/as follow-up coordinator/).first()).toBeVisible();
 });
 
 test("a visitor registers themselves from the public welcome page", async ({ page, browser }) => {
@@ -286,6 +293,46 @@ test("a person manages their own account: address, reminders and leaving", async
   expect(still).toBeDefined();
 });
 
+test("adds a member from a modal and lands on their record", async ({ page }) => {
+  await signIn(page, admin);
+  await page.goto("/members");
+  await page.getByRole("button", { name: "Add a member" }).click();
+  const dialog = page.getByRole("dialog", { name: "Add a member" });
+  await expect(dialog).toBeVisible();
+  await expect(page).toHaveURL(/\/members$/);
+
+  await dialog.locator("#member-first").fill("Mo");
+  await dialog.locator("#member-last").fill("Joiner");
+  await dialog.getByRole("button", { name: "Add Mo" }).click();
+  await expect(page).toHaveURL(/\/members\/person_/);
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole("heading", { name: "Mo Joiner" })).toBeVisible();
+
+  // The old address opens the same modal over the list.
+  await page.goto("/members/new");
+  await expect(page.getByRole("dialog", { name: "Add a member" })).toBeVisible();
+  await expect(page).toHaveURL(/\/members$/);
+});
+
+test("the menus open without errors", async ({ page }) => {
+  // Base UI throws when a menu label is outside a group, but only once the
+  // menu opens — which nothing else in this suite does.
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await signIn(page, admin);
+
+  await page.getByRole("button", { name: "New", exact: true }).click();
+  await expect(page.getByText("Add something new")).toBeVisible();
+  await page.keyboard.press("Escape");
+
+  await page.goto("/follow-ups");
+  await page.getByRole("tab", { name: /Table/ }).click();
+  await page.getByRole("button", { name: "Columns" }).click();
+  await expect(page.getByText("Visible columns")).toBeVisible();
+
+  expect(errors).toEqual([]);
+});
+
 test("on a phone, the app is a tab bar and a menu", async ({ browser }) => {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true });
   const phone = await context.newPage();
@@ -293,9 +340,30 @@ test("on a phone, the app is a tab bar and a menu", async ({ browser }) => {
 
   const tabs = phone.getByRole("navigation", { name: "Main" });
   await expect(tabs.getByRole("link", { name: "Today" })).toHaveAttribute("aria-current", "page");
-  await tabs.getByRole("link", { name: "Welcome" }).click();
-  await phone.waitForURL("/visitors/quick");
-  await expect(phone.getByRole("heading", { name: "Welcome someone new" })).toBeVisible();
+  // Welcome opens over Today instead of leaving it.
+  await tabs.getByRole("button", { name: "Welcome" }).click();
+  const welcome = phone.getByRole("dialog", { name: "Welcome someone new" });
+  await expect(welcome).toBeVisible();
+  await expect(phone).toHaveURL(/\/dashboard$/);
+  await welcome.locator("#quick-firstName").fill("Tola");
+  await welcome.locator("#quick-lastName").fill("Newcomer");
+  await welcome.getByRole("button", { name: "Add Tola" }).click();
+  // Added, and ready for the next person without closing.
+  await expect(welcome.getByText("Tola Newcomer")).toBeVisible();
+  await expect(welcome.locator("#quick-firstName")).toHaveValue("");
+  // The full form is one tap away inside the same modal, and back again.
+  await welcome.getByRole("button", { name: "Use the full form" }).click();
+  await expect(welcome.locator("#firstName")).toBeVisible();
+  await welcome.getByRole("button", { name: "Use the quick welcome" }).click();
+  await expect(welcome.locator("#quick-firstName")).toBeVisible();
+  await phone.keyboard.press("Escape");
+  await expect(welcome).toBeHidden();
+
+  // An old link to the welcome page still works: it opens the same modal.
+  await phone.goto("/visitors/quick");
+  await expect(phone.getByRole("dialog", { name: "Welcome someone new" })).toBeVisible();
+  await expect(phone).toHaveURL(/\/visitors$/);
+  await phone.keyboard.press("Escape");
 
   // Everything else is behind Menu, including what only staff need.
   await tabs.getByRole("button", { name: "Menu" }).click();

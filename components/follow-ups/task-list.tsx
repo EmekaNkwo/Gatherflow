@@ -26,6 +26,15 @@ import type { TaskWithPerson } from "@/services/follow-ups/selectors";
 import { TASK_OUTCOME_LABELS, type FollowUpTaskType } from "@/types/follow-up";
 import { personHref } from "@/components/shared/person-cell";
 
+/** What can be done to a follow-up from a card or a table row. */
+export type TaskAction = "complete" | "reschedule" | "assign" | "cancel" | "message";
+
+/**
+ * Whether this person may do that to this follow-up — `useRole().canRun`
+ * underneath, so a control is shown exactly when the server would accept it.
+ */
+export type TaskActionGate = (action: TaskAction, entry: TaskWithPerson) => boolean;
+
 interface TaskListProps {
   tasks: readonly TaskWithPerson[];
   now: Date;
@@ -40,6 +49,8 @@ interface TaskListProps {
   limit?: number;
   /** Show who the task belongs to — for staff looking at everybody's work. */
   showAssignee?: boolean;
+  /** Per-task check; without it every handler given is offered. */
+  allows?: TaskActionGate;
 }
 
 /** What to do, said the way a person would say it. */
@@ -52,6 +63,7 @@ const WHAT_TO_DO: Record<FollowUpTaskType, string> = {
   membership_orientation: "Talk about membership",
   pastoral_contact: "Pastoral contact",
   post_event_follow_up: "Follow up after the event",
+  say_hello: "Say hello in person",
 };
 
 const CONTACT_ICONS = {
@@ -86,6 +98,7 @@ export function TaskList({
   onCancel,
   limit,
   showAssignee = false,
+  allows,
 }: TaskListProps) {
   const visible = limit ? tasks.slice(0, limit) : tasks;
 
@@ -101,16 +114,33 @@ export function TaskList({
             entry={entry}
             now={now}
             showAssignee={showAssignee}
-            onComplete={onComplete}
-            onReschedule={onReschedule}
-            onMessage={onMessage}
-            onAssign={onAssign}
-            onCancel={onCancel}
+            onComplete={gated(onComplete, "complete", entry, allows)}
+            onReschedule={gated(onReschedule, "reschedule", entry, allows)}
+            onMessage={gated(onMessage, "message", entry, allows)}
+            onAssign={gated(onAssign, "assign", entry, allows)}
+            onCancel={gated(onCancel, "cancel", entry, allows)}
           />
         </li>
       ))}
     </ul>
   );
+}
+
+function gated(
+  handler: ((task: TaskWithPerson) => void) | undefined,
+  action: TaskAction,
+  entry: TaskWithPerson,
+  allows: TaskActionGate | undefined,
+): ((task: TaskWithPerson) => void) | undefined {
+  if (!handler) return undefined;
+  return !allows || allows(action, entry) ? handler : undefined;
+}
+
+/** "Grace Mensah", "Tunde Balogun (no longer active)" or "nobody yet". */
+export function ownerLabel(entry: TaskWithPerson): string {
+  if (!entry.task.assigneeId) return "nobody yet";
+  if (entry.ownerInactive) return `${entry.assigneeName ?? "someone"} (no longer active)`;
+  return entry.assigneeName ?? "nobody yet";
 }
 
 function FollowUpCard({
@@ -136,7 +166,8 @@ function FollowUpCard({
   const name = person ? displayName(person) : "Somebody no longer on record";
   const finished = task.status === "completed" || task.status === "cancelled";
   // Finished work is history: how it ended, and no way to reach out from here.
-  const contact = person && !finished ? contactOptions(person) : null;
+  // A hello in person needs no phone number and no permission.
+  const contact = person && !finished && task.type !== "say_hello" ? contactOptions(person) : null;
   const when = finished
     ? task.status === "cancelled"
       ? "Stopped"
@@ -161,7 +192,7 @@ function FollowUpCard({
           )}
           <p className="text-muted-foreground">
             {WHAT_TO_DO[task.type]}
-            {showAssignee ? ` · ${entry.assigneeName ?? "nobody yet"}` : ""}
+            {showAssignee ? ` · ${ownerLabel(entry)}` : ""}
           </p>
         </div>
         <span
@@ -195,6 +226,8 @@ function FollowUpCard({
         </div>
       ) : contact ? (
         <p className="text-sm text-muted-foreground">{contact.reason}</p>
+      ) : task.type === "say_hello" && !finished ? (
+        <p className="text-sm text-muted-foreground">Look out for them at the next service. No messages.</p>
       ) : null}
 
       {finished && task.outcomeNote ? <p className="text-sm text-muted-foreground">“{task.outcomeNote}”</p> : null}

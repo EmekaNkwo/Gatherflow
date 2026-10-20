@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { unwrap } from "@/lib/result";
 import { runAutomations } from "@/services/automation/rules";
-import { ctx, snapshot, task, visitor } from "@/tests/factories";
+import { ctx, member, NOW, snapshot, task, visitor } from "@/tests/factories";
+import type { TaskOutcome } from "@/types/follow-up";
 import { completeTask } from "./completion";
 import { isOpen } from "./tasks";
 
@@ -112,7 +113,7 @@ describe("completeTask", () => {
 
   it("leaves a member record alone apart from the task itself", () => {
     const outcome = unwrap(
-      completeTask(withTask(), { taskId: "task_fixture", outcome: "other" }, ctx()),
+      completeTask(withTask(), { taskId: "task_fixture", outcome: "other", outcomeNote: "Saw them at the shop" }, ctx()),
     );
     expect(outcome.snapshot.tasks[0].status).toBe("completed");
   });
@@ -186,5 +187,131 @@ describe("next-action automation", () => {
     const twice = runAutomations(once.snapshot, completed.events, context);
 
     expect(twice.snapshot.tasks).toHaveLength(once.snapshot.tasks.length);
+  });
+});
+
+describe("completeTask outcomes", () => {
+  const NOW_ISO = NOW.toISOString();
+
+  it.each<[TaskOutcome, number, string, string | undefined, string | undefined]>([
+    ["contacted", 1, "contacted", NOW_ISO, undefined],
+    ["no_answer", 1, "contact_attempted", NOW_ISO, undefined],
+    ["requested_another_time", 1, "contact_attempted", NOW_ISO, undefined],
+    ["wrong_details", 1, "contact_attempted", NOW_ISO, undefined],
+    // "Something else" is not a try to reach them: no attempt, no move.
+    ["other", 0, "new_visitor", undefined, undefined],
+    ["not_interested", 0, "closed", undefined, "contact_declined"],
+    ["needs_another_team", 0, "closed", undefined, "referred"],
+  ])("%s: %i attempt(s), stage %s", (outcome, attempts, stageId, lastContactAt, closure) => {
+    const result = unwrap(
+      completeTask(withTask(), { taskId: "task_fixture", outcome, outcomeNote: "What happened" }, ctx()),
+    );
+    const profile = result.snapshot.people[0].visitor!;
+    expect(profile.contactAttempts).toBe(attempts);
+    expect(profile.stageId).toBe(stageId);
+    expect(profile.lastContactAt).toBe(lastContactAt);
+    expect(profile.closure?.reason).toBe(closure);
+  });
+
+  it("refuses an unknown task or a task whose person was deleted", () => {
+    expect(completeTask(withTask(), { taskId: "nope", outcome: "contacted" }, ctx())).toMatchObject({
+      ok: false,
+      code: "not_found",
+    });
+    expect(completeTask(withTask([]), { taskId: "task_fixture", outcome: "contacted" }, ctx())).toMatchObject({
+      ok: false,
+      code: "not_found",
+    });
+  });
+
+  it("does not touch a member's record for an outcome that is not a contact attempt", () => {
+    const data = withTask([member()], [task({ personId: "person_member" })]);
+    const outcome = unwrap(completeTask(data, { taskId: "task_fixture", outcome: "not_interested" }, ctx()));
+    expect(outcome.snapshot.people).toBe(data.people);
+    expect(outcome.events.map((event) => event.type)).toEqual(["task.completed"]);
+    expect(outcome.notices).toEqual(["FU-0001 completed — not interested."]);
+  });
+
+  it("only stamps a member's record for a contact attempt", () => {
+    const data = withTask([member()], [task({ personId: "person_member" })]);
+    const outcome = unwrap(completeTask(data, { taskId: "task_fixture", outcome: "contacted" }, ctx()));
+    const updated = outcome.snapshot.people[0];
+    expect(updated.updatedAt).toBe(NOW_ISO);
+    expect({ ...updated, updatedAt: data.people[0].updatedAt }).toEqual(data.people[0]);
+    expect(outcome.notices).toEqual(["FU-0001 completed — successfully contacted."]);
+    expect(outcome.snapshot.activity).toHaveLength(1);
+  });
+
+  it("does not move a visitor out of a terminal stage on success", () => {
+    const settled = visitor({ visitor: { ...visitor().visitor!, stageId: "connected" } });
+    const outcome = unwrap(completeTask(withTask([settled]), { taskId: "task_fixture", outcome: "contacted" }, ctx()));
+    expect(outcome.snapshot.people[0].visitor?.stageId).toBe("connected");
+    expect(outcome.snapshot.activity.map((entry) => entry.type)).toEqual(["follow_up.completed"]);
+  });
+
+  it("logs the stage move alongside the completion", () => {
+    const outcome = unwrap(completeTask(withTask(), { taskId: "task_fixture", outcome: "contacted" }, ctx()));
+    expect(outcome.snapshot.activity.map((entry) => [entry.type, entry.summary])).toEqual([
+      ["follow_up.completed", "FU-0001: welcome message completed for Tunde Balogun — successfully contacted."],
+      ["visitor.stage_changed", 'Tunde Balogun moved to "Contacted".'],
+    ]);
+  });
+
+  it("cancels one other open task, keeping its notes, when someone declines", () => {
+    const data = withTask(
+      [visitor()],
+      [task(), task({ id: "task_other", reference: "FU-0002", notes: "Invite to lunch" }), task({ id: "task_done", status: "completed" })],
+    );
+    const outcome = unwrap(completeTask(data, { taskId: "task_fixture", outcome: "not_interested" }, ctx()));
+    const other = outcome.snapshot.tasks.find((entry) => entry.id === "task_other")!;
+    expect(other.status).toBe("cancelled");
+    expect(other.notes).toBe("Invite to lunch\nCancelled: follow-up stopped.");
+    expect(outcome.snapshot.tasks.find((entry) => entry.id === "task_done")?.status).toBe("completed");
+    expect(outcome.notices).toEqual([
+      "FU-0001 completed — not interested.",
+      "Tunde Balogun is not interested in further contact, so follow-up has stopped.",
+      "1 other open task cancelled.",
+    ]);
+    expect(outcome.snapshot.activity.map((entry) => entry.type)).toEqual(["follow_up.completed", "visitor.closed"]);
+  });
+
+  it("keeps the current stage when the church has no terminal stage to close into", () => {
+    const base = withTask();
+    const data = {
+      ...base,
+      settings: {
+        ...base.settings,
+        pipelineStages: base.settings.pipelineStages.filter((stage) => stage.kind !== "terminal"),
+      },
+    };
+    const outcome = unwrap(completeTask(data, { taskId: "task_fixture", outcome: "needs_another_team" }, ctx()));
+    expect(outcome.snapshot.people[0].visitor).toMatchObject({
+      stageId: "new_visitor",
+      closure: { reason: "referred", note: undefined, recordedAt: NOW_ISO },
+    });
+  });
+
+  it("does not modify the snapshot it was given", () => {
+    const data = withTask();
+    const before = JSON.stringify(data);
+    completeTask(data, { taskId: "task_fixture", outcome: "not_interested" }, ctx());
+    expect(JSON.stringify(data)).toBe(before);
+  });
+});
+
+describe("audit fixes: the \"something else\" outcome", () => {
+  it("needs a note saying what happened", () => {
+    const outcome = completeTask(withTask(), { taskId: "task_fixture", outcome: "other" }, ctx());
+    expect(outcome).toMatchObject({ ok: false, code: "invalid" });
+    const blank = completeTask(withTask(), { taskId: "task_fixture", outcome: "other", outcomeNote: "   " }, ctx());
+    expect(blank).toMatchObject({ ok: false, code: "invalid" });
+  });
+
+  it("does not bring the attempt limit closer", () => {
+    const outcome = unwrap(
+      completeTask(withTask(), { taskId: "task_fixture", outcome: "other", outcomeNote: "Met their sister" }, ctx()),
+    );
+    expect(outcome.snapshot.people[0].visitor?.contactAttempts).toBe(0);
+    expect(outcome.snapshot.people[0].visitor?.closure).toBeUndefined();
   });
 });

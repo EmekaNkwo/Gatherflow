@@ -12,6 +12,19 @@ export function respondErr(error: string, code?: string): Response {
   return Response.json({ ok: false, error, code }, { status: statusFor(code) });
 }
 
+/**
+ * Too many requests: a 429 that says how long to wait, both in `Retry-After`
+ * (which browsers and proxies understand) and in the body, so a page can
+ * count down rather than leave the person guessing.
+ */
+export function respondRateLimited(retryAfterSeconds: number, error: string): Response {
+  const retryAfter = Math.max(1, Math.ceil(retryAfterSeconds));
+  return Response.json(
+    { ok: false, error, code: "rate_limited", retryAfter },
+    { status: 429, headers: { "Retry-After": String(retryAfter) } },
+  );
+}
+
 /** Turns a domain refusal into the response it deserves. */
 export function respond<T>(outcome: Result<T>, status = 200): Response {
   return outcome.ok
@@ -35,6 +48,7 @@ function statusFor(code: string | undefined): number {
     case "not_found":
       return 404;
     case "conflict":
+    case "in_progress":
       return 409;
     case "rate_limited":
       return 429;

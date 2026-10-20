@@ -1,6 +1,7 @@
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { auditResult, recordAudit } from "@/server/audit/audit";
+import { auditTarget, maskEmail } from "@/services/settings/audit-labels";
 import {
   createInvitation,
   invitationUrl,
@@ -56,9 +57,18 @@ export async function POST(request: Request): Promise<Response> {
     teamMemberId: input.value.teamMemberId ?? null,
     invitedBy: session.userId,
   });
+  // Who was invited and to what, with the address masked: the trail should
+  // say what happened without becoming a list of addresses.
+  const invitee = auditTarget(maskEmail(input.value.email), input.value.role);
   await auditResult(
     db,
-    { churchId: session.churchId, userId: session.userId, actorId: session.teamMemberId, action: "invitation.create" },
+    {
+      churchId: session.churchId,
+      userId: session.userId,
+      actorId: session.teamMemberId,
+      action: "invitation.create",
+      targetId: invitee,
+    },
     created,
   );
   if (!created.ok) return respondErr(created.error, created.code);
@@ -80,8 +90,9 @@ export async function POST(request: Request): Promise<Response> {
     userId: session.userId,
     actorId: session.teamMemberId,
     action: "invitation.email",
-    targetId: created.value.invitation.id,
-    outcome: delivery.emailed ? "ok" : "failed",
+    targetId: invitee,
+    outcome: delivery.emailed ? "ok" : delivery.skipped ? "skipped" : "failed",
+    code: delivery.emailed ? null : delivery.skipped ? "not_configured" : "transport",
   });
 
   return respondOk({ invitation: created.value.invitation, link, delivery }, 201);
@@ -101,6 +112,7 @@ export async function DELETE(request: Request): Promise<Response> {
     userId: session.userId,
     actorId: session.teamMemberId,
     action: "invitation.revoke",
+    targetId: removed ? auditTarget(maskEmail(removed.email), removed.role) : null,
     outcome: removed ? "ok" : "refused",
     code: removed ? null : "not_found",
   });

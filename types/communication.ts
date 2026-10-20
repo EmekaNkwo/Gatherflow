@@ -129,6 +129,21 @@ export const TERMINAL_EMAIL_STATUSES: readonly EmailCommunicationStatus[] = [
   "failed",
 ];
 
+/**
+ * Statuses that mean nobody was reached: a saved draft, or an email that
+ * never left. These do not count towards the church's contact limit.
+ */
+export const NON_CONTACT_STATUSES: readonly CommunicationStatus[] = [
+  "drafted",
+  "failed",
+  "bounced",
+  "blocked",
+];
+
+export function countsAsContact(status: CommunicationStatus): boolean {
+  return !NON_CONTACT_STATUSES.includes(status);
+}
+
 export interface CommunicationLogEntry {
   id: string;
   personId: PersonId;

@@ -6,7 +6,8 @@ import { parseCommandInput } from "@/server/church/input";
 import { runSystemCommand } from "@/server/church/commands";
 import { getDatabase } from "@/server/db/client";
 import { consumeBudget } from "@/server/http/rate-limit";
-import { respondErr, respondOk } from "@/server/http/respond";
+import { clientAddress } from "@/server/http/client-address";
+import { respondErr, respondOk, respondRateLimited } from "@/server/http/respond";
 
 /**
  * The public welcome page's one write: a visitor registering themselves.
@@ -46,10 +47,12 @@ export async function POST(request: Request): Promise<Response> {
   const values = input.value;
 
   const db = getDatabase();
-  const address = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
-  const budget = await consumeBudget(db, `connect:${address}:${values.churchId}`, BUDGET);
+  const budget = await consumeBudget(db, `connect:${clientAddress(request)}:${values.churchId}`, BUDGET);
   if (!budget.allowed) {
-    return respondErr("Too many registrations from this connection. Please try again later.", "rate_limited");
+    return respondRateLimited(
+      budget.retryAfter ?? BUDGET.window,
+      "Too many registrations from this connection. Please try again later.",
+    );
   }
 
   const today = new Date().toISOString().slice(0, 10);

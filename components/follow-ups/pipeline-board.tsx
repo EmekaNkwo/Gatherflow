@@ -21,11 +21,27 @@ import type { VisitorRow } from "@/services/visitors/selectors";
 
 type Column = { stage: PipelineStage; rows: VisitorRow[] };
 
+/**
+ * What each card offers, decided per visitor by the caller with `canRun`, so
+ * a card never shows a move the server would refuse.
+ */
+export interface BoardActions {
+  canMove: (row: VisitorRow) => boolean;
+  canStop: (row: VisitorRow) => boolean;
+  canReopen: (row: VisitorRow) => boolean;
+  onMove: (personId: string, stageId: string) => void;
+  /** Stopping goes through its own dialog, so a reason is recorded. */
+  onStop: (row: VisitorRow) => void;
+  /** Back into an active stage, from a final one or a stopped follow-up. */
+  onReopen: (row: VisitorRow, stageId: string) => void;
+  /** The stage that means "follow-up stopped". */
+  closedStageId?: string;
+}
+
 interface PipelineBoardProps {
   columns: ReadonlyArray<Column>;
   now: Date;
-  canEdit: boolean;
-  onMove: (personId: string, stageId: string) => void;
+  actions: BoardActions;
 }
 
 // Kept here as well, for screens that already import it from the board.
@@ -42,7 +58,7 @@ export function PipelineBoard(props: PipelineBoardProps) {
   return isMobile ? <StageList {...props} /> : <Board {...props} />;
 }
 
-function Board({ columns, now, canEdit, onMove }: PipelineBoardProps) {
+function Board({ columns, now, actions }: PipelineBoardProps) {
   return (
     <div className="-mx-4 overflow-x-auto px-4 pb-2 md:mx-0 md:px-0">
       <div className="flex min-w-max gap-4">
@@ -74,7 +90,7 @@ function Board({ columns, now, canEdit, onMove }: PipelineBoardProps) {
                         >
                           {displayName(row.person)}
                         </Link>
-                        <MoveMenu row={row} stage={stage} columns={columns} canEdit={canEdit} onMove={onMove} />
+                        <MoveMenu row={row} stage={stage} columns={columns} actions={actions} />
                       </div>
                       <PersonSummary row={row} now={now} />
                     </article>
@@ -91,7 +107,7 @@ function Board({ columns, now, canEdit, onMove }: PipelineBoardProps) {
   );
 }
 
-function StageList({ columns, now, canEdit, onMove }: PipelineBoardProps) {
+function StageList({ columns, now, actions }: PipelineBoardProps) {
   return (
     <div className="space-y-3">
       {columns.map(({ stage, rows }) => (
@@ -123,7 +139,7 @@ function StageList({ columns, now, canEdit, onMove }: PipelineBoardProps) {
                     </Link>
                     <PersonSummary row={row} now={now} />
                   </div>
-                  <MoveMenu row={row} stage={stage} columns={columns} canEdit={canEdit} onMove={onMove} />
+                  <MoveMenu row={row} stage={stage} columns={columns} actions={actions} />
                 </li>
               ))}
             </ul>
@@ -168,17 +184,42 @@ function MoveMenu({
   row,
   stage,
   columns,
-  canEdit,
-  onMove,
+  actions,
 }: {
   row: VisitorRow;
   stage: PipelineStage;
   columns: ReadonlyArray<Column>;
-  canEdit: boolean;
-  onMove: (personId: string, stageId: string) => void;
+  actions: BoardActions;
 }) {
-  if (!canEdit || stage.kind === "terminal") return null;
   const name = displayName(row.person);
+  const finished = stage.kind === "terminal" || Boolean(row.person.visitor?.closure);
+  const activeStages = columns.filter((column) => column.stage.kind === "active");
+
+  // A final stage or a stopped follow-up has one way out: reopening, into
+  // whichever active stage fits. Everything else can move anywhere, except
+  // that "stopped" asks why first.
+  const items = finished
+    ? actions.canReopen(row)
+      ? activeStages.map((column) => ({
+          key: column.stage.id,
+          label: plainStageName(column.stage),
+          run: () => actions.onReopen(row, column.stage.id),
+        }))
+      : []
+    : columns
+        .filter((column) => column.stage.id !== stage.id)
+        .flatMap((column) => {
+          if (column.stage.id === actions.closedStageId) {
+            return actions.canStop(row)
+              ? [{ key: column.stage.id, label: "Stop following up…", run: () => actions.onStop(row) }]
+              : [];
+          }
+          return actions.canMove(row)
+            ? [{ key: column.stage.id, label: plainStageName(column.stage), run: () => actions.onMove(row.person.id, column.stage.id) }]
+            : [];
+        });
+
+  if (!items.length) return null;
 
   return (
     <DropdownMenu>
@@ -188,7 +229,7 @@ function MoveMenu({
             size="icon-lg"
             variant="ghost"
             className="-my-2 shrink-0 rounded-full"
-            aria-label={`Move ${name} to another stage`}
+            aria-label={finished ? `Reopen follow-up for ${name}` : `Move ${name} to another stage`}
           >
             <EllipsisIcon />
           </Button>
@@ -196,18 +237,14 @@ function MoveMenu({
       />
       <DropdownMenuContent align="end" className="min-w-56">
         <DropdownMenuGroup>
-          <DropdownMenuLabel>Move {row.person.firstName} to…</DropdownMenuLabel>
-          {columns
-            .filter((column) => column.stage.id !== stage.id)
-            .map((column) => (
-              <DropdownMenuItem
-                key={column.stage.id}
-                className="min-h-11"
-                onClick={() => onMove(row.person.id, column.stage.id)}
-              >
-                {plainStageName(column.stage)}
-              </DropdownMenuItem>
-            ))}
+          <DropdownMenuLabel>
+            {finished ? `Reopen and move ${row.person.firstName} to…` : `Move ${row.person.firstName} to…`}
+          </DropdownMenuLabel>
+          {items.map((item) => (
+            <DropdownMenuItem key={item.key} className="min-h-11" onClick={item.run}>
+              {item.label}
+            </DropdownMenuItem>
+          ))}
         </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>

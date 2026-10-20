@@ -1,7 +1,9 @@
 "use client";
 
+import { toast } from "sonner";
 import { useEffect, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useChurchStore } from "@/stores/church-store";
 import { useSessionStore } from "@/stores/session-store";
@@ -32,6 +34,22 @@ export function ChurchDataProvider({ children }: { children: ReactNode }) {
     void hydrate();
   }, [hydrate]);
 
+  // Other people change the church too. Coming back to the tab — after a
+  // phone call, from another app — shows what is true now, not what was
+  // true when the page first loaded.
+  const revalidate = useChurchStore((state) => state.revalidate);
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void revalidate();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, [revalidate]);
+
   // The interface's advisory role is the server's answer. Nothing renders
   // against it until it has been adopted, so no button is ever offered on
   // the strength of a role the server did not grant.
@@ -45,25 +63,32 @@ export function ChurchDataProvider({ children }: { children: ReactNode }) {
     if (redirect) router.replace(redirect);
   }, [redirect, router]);
 
+  // What went wrong is a toast; the page below only offers to try again. The
+  // fixed id keeps a re-render from stacking the same message twice.
+  useEffect(() => {
+    if (loadError && !redirect) {
+      toast.error("Your church could not be opened", { id: "church-load", description: loadError });
+    }
+  }, [loadError, redirect]);
+
   // The church may genuinely be unreachable. Saying so beats a skeleton that
   // never resolves, and inventing an empty church would invite somebody to
   // edit a fiction.
-  if (loadError && !redirect) return <UnavailableShell message={loadError} />;
+  if (loadError && !redirect) return <UnavailableShell />;
 
   if (!ready) return <LoadingShell />;
 
   return <>{children}</>;
 }
 
-function UnavailableShell({ message }: { message: string }) {
+function UnavailableShell() {
   return (
     <div className="w-full p-4 lg:p-6">
-      <div
-        role="alert"
-        className="mx-auto max-w-lg space-y-2 rounded-xl border border-destructive/40 bg-destructive/5 p-6 text-center"
-      >
-        <h1 className="text-lg font-semibold">The church data could not be loaded</h1>
-        <p className="text-sm text-muted-foreground">{message}</p>
+      <div className="mx-auto max-w-lg space-y-4 rounded-3xl border bg-card p-6 text-center">
+        <h1 className="text-2xl">Not available right now</h1>
+        <Button size="lg" className="rounded-full" onClick={() => window.location.reload()}>
+          Try again
+        </Button>
       </div>
     </div>
   );

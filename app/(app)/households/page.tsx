@@ -83,7 +83,7 @@ export default function HouseholdsPage() {
                 </ul>
               ) : (
                 <p className="rounded-2xl bg-muted px-5 py-4 text-muted-foreground">
-                  Nobody in this household yet. Add people from their own page.
+                  Nobody in this household yet. To add someone, open their member page and choose “Edit details”.
                 </p>
               )}
             </section>
@@ -93,7 +93,7 @@ export default function HouseholdsPage() {
         <EmptyState
           icon={HomeIcon}
           title="No households yet"
-          description="Create a household, then add people to it from their own page."
+          description="Create a household, then add people to it from their member page with “Edit details”."
         />
       )}
 

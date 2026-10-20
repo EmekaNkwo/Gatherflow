@@ -6,18 +6,27 @@ import { SlidersHorizontalIcon } from "lucide-react";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { EmptyState, NoResultsState, RestrictedState } from "@/components/shared/empty-state";
 import { PageHeader, PageShell } from "@/components/shared/page-header";
+import { SelectField, type SelectOption } from "@/components/shared/select-field";
 import { personHref } from "@/components/shared/person-cell";
 import { formatDisplayDateTime } from "@/lib/dates";
 import { displayName, normalise } from "@/lib/strings";
 import { CONTACT_METHOD_LABELS } from "@/types/common";
 import { COMMUNICATION_STATUS_LABELS, type CommunicationStatus } from "@/types/communication";
+import { summariseHistory } from "@/services/communications/messaging";
 import { useCommunications } from "@/hooks/useCommunications";
 import { useRole } from "@/hooks/useRole";
 
 const PAGE_SIZE = 50;
+
+const STATUS_OPTIONS: SelectOption[] = [
+  { value: "", label: "Anything that happened" },
+  ...(Object.keys(COMMUNICATION_STATUS_LABELS) as CommunicationStatus[]).map((option) => ({
+    value: option,
+    label: COMMUNICATION_STATUS_LABELS[option],
+  })),
+];
 
 /** Reached them, as far as anyone can tell. */
 const GOOD: readonly CommunicationStatus[] = ["delivered"];
@@ -62,7 +71,7 @@ export default function CommunicationHistoryPage() {
     );
   }
 
-  const emailed = history.filter((entry) => entry.entry.channel === "email").length;
+  const summary = summariseHistory(history.map((item) => item.entry));
   const problems = history.filter((entry) => PROBLEM.includes(entry.entry.status)).length;
   const shown = rows.slice(0, limit);
   const filtered = Boolean(search || status);
@@ -71,13 +80,13 @@ export default function CommunicationHistoryPage() {
     <PageShell className="max-w-4xl">
       <PageHeader
         title="Sent messages"
-        description="Every message prepared here, and what happened to it. For WhatsApp, texts and calls we can only record what you did; for email, it is what the email provider told us."
+        description="Every message prepared here, drafts included, and what happened to it. For WhatsApp, texts, calls and anything opened in your own email app we can only record what you did; for email the church sends, it is what the email provider told us."
       />
 
       {history.length ? (
         <p className="max-w-2xl text-lg">
-          {history.length} {history.length === 1 ? "message" : "messages"} so far, {emailed} of them by email.{" "}
-          {problems ? `${problems} did not get through.` : ""}
+          {summary}
+          {problems ? ` ${problems} did not get through.` : ""}
         </p>
       ) : null}
 
@@ -101,18 +110,13 @@ export default function CommunicationHistoryPage() {
           </Button>
         </div>
         {moreFilters ? (
-          <NativeSelect
+          <SelectField
             value={status}
-            onChange={(event) => setStatus(event.target.value as CommunicationStatus | "")}
+            onValueChange={(value) => setStatus(value as CommunicationStatus | "")}
             aria-label="Filter by what happened"
-          >
-            <NativeSelectOption value="">Anything that happened</NativeSelectOption>
-            {(Object.keys(COMMUNICATION_STATUS_LABELS) as CommunicationStatus[]).map((option) => (
-              <NativeSelectOption key={option} value={option}>
-                {COMMUNICATION_STATUS_LABELS[option]}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
+            className="w-auto"
+            options={STATUS_OPTIONS}
+          />
         ) : null}
       </div>
 

@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useRole } from "@/hooks/useRole";
+import { useWelcomeStore } from "@/stores/welcome-store";
 import type { Capability } from "@/types/team";
 import {
   Command,
@@ -43,11 +44,12 @@ const KIND_LABELS: Record<string, string> = {
 const SHORTCUTS: ReadonlyArray<{
   value: string;
   label: string;
+  /** Where it goes; "welcome" opens the welcome modal instead. */
   href: string;
   icon: typeof UserPlusIcon;
   allowed: (can: (capability: Capability) => boolean) => boolean;
 }> = [
-  { value: "welcome", label: "Welcome someone new", href: "/visitors/quick", icon: UserPlusIcon, allowed: (can) => can("visitors.write") },
+  { value: "welcome", label: "Welcome someone new", href: "welcome", icon: UserPlusIcon, allowed: (can) => can("visitors.write") },
   { value: "check-in", label: "Check-in", href: "/attendance", icon: CalendarPlusIcon, allowed: (can) => can("attendance.write") },
   {
     value: "waiting",
@@ -61,6 +63,7 @@ const SHORTCUTS: ReadonlyArray<{
 
 export function CommandPalette() {
   const { can } = useRole();
+  const showWelcome = useWelcomeStore((state) => state.show);
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const { query, setQuery, grouped, hasQuery, searching } = useGlobalSearch();
@@ -136,7 +139,15 @@ export function CommandPalette() {
             <>
               <CommandGroup heading="Go to">
                 {SHORTCUTS.filter((shortcut) => shortcut.allowed(can)).map((shortcut) => (
-                  <CommandItem key={shortcut.value} value={shortcut.value} onSelect={() => go(shortcut.href)}>
+                  <CommandItem
+                    key={shortcut.value}
+                    value={shortcut.value}
+                    onSelect={() => {
+                      if (shortcut.href !== "welcome") return go(shortcut.href);
+                      setOpen(false);
+                      showWelcome();
+                    }}
+                  >
                     <shortcut.icon />
                     {shortcut.label}
                   </CommandItem>

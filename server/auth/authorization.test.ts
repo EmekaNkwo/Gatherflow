@@ -9,6 +9,7 @@ import { createDatabase, type Database } from "@/server/db/client";
 import { churchMembers, churches, user } from "@/server/db/schema";
 import { createPostgresSnapshotRepository } from "@/server/db/snapshot-repository";
 import { readChurch, runCommand } from "@/server/church/commands";
+import { commandFor } from "@/services/commands/registry";
 import { authorize, FORBIDDEN, scopeFor } from "./authorize";
 import { resolveChurchSession, type ChurchSession } from "./session";
 import { getAuth } from "./auth";
@@ -95,6 +96,61 @@ describe.skipIf(!CONNECTION)("server-side authorisation", () => {
     });
   });
 
+  describe("a volunteer acts only on their own work", () => {
+    /** Runs a registry command exactly as the commands route does. */
+    async function send(session: ChurchSession, name: "task.reschedule" | "visitor.closeFollowUp", input: object) {
+      const definition = commandFor(name);
+      const parsed = definition.schema.parse(input);
+      return runCommand(
+        { db, session },
+        definition.capability,
+        (snap, ctx) => definition.run(snap, parsed, ctx),
+        (snap, me) => definition.ownedBy!(snap, parsed, me),
+      );
+    }
+
+    it("refuses another volunteer's task and allows their own", async () => {
+      const { session, snapshot } = await churchWithSession("volunteer", { teamMemberId: "tm_vol_amara" });
+      const me = session.teamMemberId as string;
+      const open = snapshot.tasks.filter((task) => task.status === "pending" || task.status === "in_progress");
+      const theirs = open.find((task) => task.assigneeId && task.assigneeId !== me);
+      const mine = open.find((task) => task.assigneeId === me);
+      expect(theirs && mine).toBeTruthy();
+
+      const refused = await send(session, "task.reschedule", { taskId: theirs!.id, dueDate: "2026-12-01" });
+      expect(refused.ok).toBe(false);
+      if (!refused.ok) expect(refused.code).toBe(FORBIDDEN);
+
+      const allowed = await send(session, "task.reschedule", { taskId: mine!.id, dueDate: "2026-12-01" });
+      expect(allowed.ok).toBe(true);
+    });
+
+    it("refuses to stop following up somebody another volunteer looks after", async () => {
+      const { session, snapshot } = await churchWithSession("volunteer", { teamMemberId: "tm_vol_amara" });
+      const me = session.teamMemberId as string;
+      const someoneElses = snapshot.people.find(
+        (person) =>
+          person.visitor?.assignedTo &&
+          person.visitor.assignedTo !== me &&
+          !snapshot.tasks.some((task) => task.personId === person.id && task.assigneeId === me),
+      );
+      expect(someoneElses).toBeDefined();
+
+      const refused = await send(session, "visitor.closeFollowUp", { personId: someoneElses!.id, reason: "paused" });
+      expect(refused.ok).toBe(false);
+      if (!refused.ok) expect(refused.code).toBe(FORBIDDEN);
+    });
+
+    it("lets a coordinator act on anybody's work", async () => {
+      const { session, snapshot } = await churchWithSession("follow_up_coordinator");
+      const anyOpen = snapshot.tasks.find(
+        (task) => task.assigneeId !== session.teamMemberId && task.status === "pending",
+      );
+      const outcome = await send(session, "task.reschedule", { taskId: anyOpen!.id, dueDate: "2026-12-01" });
+      expect(outcome.ok).toBe(true);
+    });
+  });
+
   describe("read scope", () => {
     it("keeps pastoral care from an administrator, and allows a pastor", async () => {
       // Deliberate: configuring the system and reading people's care notes are
@@ -128,6 +184,35 @@ describe.skipIf(!CONNECTION)("server-side authorisation", () => {
       const volunteerSession: ChurchSession = { ...pastor.session, role: "volunteer" };
       const volunteerRead = await readChurch({ db, session: volunteerSession });
       expect(volunteerRead.snapshot.careRecords).toEqual([]);
+    });
+
+    it("sends emergency contacts and restricted timeline entries only to roles that read pastoral care", async () => {
+      const pastor = await churchWithSession("pastor");
+      const restrictedInSeed = pastor.snapshot.activity.filter((entry) => entry.visibility === "restricted").length;
+      const contactsInSeed = pastor.snapshot.people.filter((person) => person.member?.emergencyContact).length;
+      expect(restrictedInSeed).toBeGreaterThan(0);
+      expect(contactsInSeed).toBeGreaterThan(0);
+
+      const pastorRead = await readChurch({ db, session: pastor.session });
+      expect(pastorRead.snapshot.activity.filter((entry) => entry.visibility === "restricted")).toHaveLength(
+        restrictedInSeed,
+      );
+      expect(pastorRead.snapshot.people.filter((person) => person.member?.emergencyContact)).toHaveLength(contactsInSeed);
+
+      // A volunteer reads the history of their own follow-ups only.
+      const volunteerRead = await readChurch({ db, session: { ...pastor.session, role: "volunteer", teamMemberId: "tm_vol_amara" } });
+      const theirTasks = new Set(volunteerRead.snapshot.tasks.map((task) => task.id));
+      const taskEntries = volunteerRead.snapshot.activity.filter((entry) => entry.meta?.taskId);
+      expect(taskEntries.length).toBeGreaterThan(0);
+      expect(taskEntries.every((entry) => theirTasks.has(entry.meta!.taskId))).toBe(true);
+
+      for (const role of ["administrator", "follow_up_coordinator", "volunteer"] as const) {
+        const read = await readChurch({ db, session: { ...pastor.session, role } });
+        expect(read.snapshot.activity.some((entry) => entry.visibility === "restricted"), role).toBe(false);
+        expect(read.snapshot.people.some((person) => person.member?.emergencyContact), role).toBe(false);
+        // Everything else about the people is still there.
+        expect(read.snapshot.people).toHaveLength(pastor.snapshot.people.length);
+      }
     });
 
     it("returns only a volunteer's own tasks, from the database", async () => {

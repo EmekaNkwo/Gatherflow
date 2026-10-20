@@ -15,13 +15,17 @@ import { MembershipStatusBadge } from "@/components/shared/badges";
 import { PersonCell } from "@/components/shared/person-cell";
 import { formatShortDate } from "@/lib/dates";
 import { displayName } from "@/lib/strings";
+import { canJoinGroups } from "@/services/groups/groups";
 import type { MemberRow } from "@/services/members/selectors";
 
 interface MemberTableProps {
   rows: MemberRow[];
   toolbar?: React.ReactNode;
   emptyState: React.ReactNode;
-  canEdit: boolean;
+  /** The signed-in role may send `member.changeStatus`. */
+  canChangeStatus: boolean;
+  /** The signed-in role may send `group.addMember`. */
+  canAddToGroup: boolean;
   onChangeStatus: (row: MemberRow) => void;
   onAddToGroup: (row: MemberRow) => void;
 }
@@ -31,7 +35,8 @@ export function MemberTable({
   rows,
   toolbar,
   emptyState,
-  canEdit,
+  canChangeStatus,
+  canAddToGroup,
   onChangeStatus,
   onAddToGroup,
 }: MemberTableProps) {
@@ -75,7 +80,7 @@ export function MemberTable({
         header: "Groups",
         accessorFn: (row) => row.groupNames.join(", "),
         cell: ({ row }) => (
-          <TextCell value={row.original.groupNames.join(", ") || "Not in a group"} />
+          <TextCell value={groupSummary(row.original)} />
         ),
       },
       {
@@ -132,22 +137,23 @@ export function MemberTable({
               <DropdownMenuItem render={<Link href={`/members/${row.original.person.id}`} />}>
                 Open record
               </DropdownMenuItem>
-              {canEdit ? (
-                <>
-                  <DropdownMenuItem onClick={() => onChangeStatus(row.original)}>
-                    Change membership status
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => onAddToGroup(row.original)}>
-                    Add to a group
-                  </DropdownMenuItem>
-                </>
+              {canChangeStatus ? (
+                <DropdownMenuItem onClick={() => onChangeStatus(row.original)}>
+                  Change membership status
+                </DropdownMenuItem>
+              ) : null}
+              {/* People who have transferred or been archived can't join a group. */}
+              {canAddToGroup && canJoinGroups(row.original.person) ? (
+                <DropdownMenuItem onClick={() => onAddToGroup(row.original)}>
+                  Add to a group
+                </DropdownMenuItem>
               ) : null}
             </DropdownMenuContent>
           </DropdownMenu>
         ),
       },
     ],
-    [canEdit, onAddToGroup, onChangeStatus],
+    [canChangeStatus, canAddToGroup, onAddToGroup, onChangeStatus],
   );
 
   return (
@@ -161,4 +167,11 @@ export function MemberTable({
       hiddenByDefault={["household", "preferredService"]}
     />
   );
+}
+
+/** Their groups, with any that aren't meeting marked, so "in a group" reads true. */
+function groupSummary(row: MemberRow): string {
+  if (!row.groupNames.length) return "Not in a group";
+  const paused = new Set(row.inactiveGroupNames);
+  return row.groupNames.map((name) => (paused.has(name) ? `${name} (not meeting)` : name)).join(", ");
 }

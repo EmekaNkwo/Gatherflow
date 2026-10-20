@@ -97,8 +97,16 @@ export function usePushReminders() {
     try {
       const subscription = await currentSubscription();
       if (subscription) {
-        await unsubscribePush(subscription.endpoint);
-        await subscription.unsubscribe();
+        // The server goes first: while it still holds the browser, reminders
+        // are still on, whatever the browser says.
+        const removed = await unsubscribePush(subscription.endpoint);
+        if (!removed.ok) {
+          toast.error(removed.error);
+          return;
+        }
+        // Once the server has forgotten it, nothing more is sent here, so a
+        // browser that fails to tidy up its own subscription changes nothing.
+        await subscription.unsubscribe().catch(() => false);
       }
       setState({ status: "off", publicKey: state.publicKey });
       toast.success("Daily reminders are off for this browser.");

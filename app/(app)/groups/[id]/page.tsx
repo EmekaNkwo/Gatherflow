@@ -26,7 +26,9 @@ import { OptedOutBadge } from "@/components/shared/badges";
 import { PageHeader, PageShell, Section } from "@/components/shared/page-header";
 import { personHref } from "@/components/shared/person-cell";
 import { formatDisplayDate } from "@/lib/dates";
-import { displayName, normalise } from "@/lib/strings";
+import { matchesPersonQuery } from "@/lib/person-search";
+import { displayName } from "@/lib/strings";
+import { canJoinGroups } from "@/services/groups/groups";
 import { GROUP_TYPE_LABELS } from "@/types/group";
 import { useRole } from "@/hooks/useRole";
 import { useGroup, useGroups } from "@/hooks/useGroups";
@@ -45,23 +47,28 @@ export default function GroupPage() {
   const snapshot = useSnapshot();
   const entry = useGroup(groupId);
   const { addMember, removeMember, assignLeader, setActive } = useGroups();
-  const { can } = useRole();
+  const { can, canRun } = useRole();
 
   const [adding, setAdding] = useState(false);
   const [search, setSearch] = useState("");
   const [removing, setRemoving] = useState<{ personId: string; name: string } | null>(null);
 
-  const canEdit = can("groups.write");
+  // Gated by the commands these controls send, as the server checks them.
+  const canEdit = canRun("group.addMember", { groupId, personId: "" });
 
+  /**
+   * People who could join: not already in it, still part of the church
+   * (transferred and archived members can't be added), and matching the
+   * shared person search (preferred names, any word order, accents, phones).
+   */
   const candidates = useMemo(() => {
     if (!entry) return [];
-    const needle = normalise(search);
     return snapshot.people
       .filter(
         (person) =>
           !entry.group.members.some((member) => member.personId === person.id) &&
-          (!needle ||
-            normalise(`${person.firstName} ${person.lastName}`).includes(needle)),
+          canJoinGroups(person) &&
+          matchesPersonQuery(person, search),
       )
       .slice(0, 10);
   }, [entry, snapshot.people, search]);
@@ -154,7 +161,7 @@ export default function GroupPage() {
             <Input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search by name"
+              placeholder="Search by name or phone"
               aria-label="Search people to add"
               className="h-11 rounded-full"
               autoFocus

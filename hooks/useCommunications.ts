@@ -6,6 +6,7 @@ import type { ContactMethod, PersonId, TaskId, TemplateId } from "@/types/common
 import type { ManualCommunicationStatus } from "@/types/communication";
 import type { Result } from "@/lib/result";
 import {
+  buildExternalLink,
   communicationsForPerson,
   draftMessage,
   type DraftMessageInput,
@@ -75,45 +76,75 @@ export function useCommunications() {
     [dispatch],
   );
 
-  /** Copies the message and records that it was copied. */
-  const copyAndLog = useCallback(
-    async (draft: MessageDraft, taskId?: TaskId) => {
-      try {
-        await navigator.clipboard.writeText(draft.body);
-      } catch {
-        toast.error("Could not reach the clipboard. Select the text and copy it manually.");
-        return;
-      }
-      await log({
-        personId: draft.personId,
-        channel: draft.channel,
-        status: "copied",
-        body: draft.body,
-        templateId: draft.templateId,
-        taskId,
-      });
+  /**
+   * The link for the words as they stand now. Built when it is needed, never
+   * stored, so an edit in the composer is exactly what the app receives.
+   */
+  const linkFor = useCallback(
+    (draft: MessageDraft, body: string): string | undefined => {
+      const person = snapshot.people.find((entry) => entry.id === draft.personId);
+      if (!person) return undefined;
+      return buildExternalLink(
+        draft.channel,
+        person.phone,
+        person.email,
+        body,
+        snapshot.settings.defaultCountryCallingCode,
+      );
     },
-    [log],
+    [snapshot],
   );
 
-  /** Opens the user's own messaging app, then records that it was opened. */
-  const openExternally = useCallback(
-    (draft: MessageDraft, taskId?: TaskId) => {
-      if (!draft.externalLink) {
-        toast.error("There is no contact detail for that channel.");
-        return;
-      }
-      window.open(draft.externalLink, "_blank", "noopener,noreferrer");
-      void log({
-        personId: draft.personId,
-        channel: draft.channel,
-        status: "opened_external",
-        body: draft.body,
-        templateId: draft.templateId,
-        taskId,
-      });
+  /**
+   * Records the hand-over first and only then copies or opens. The server is
+   * the one that knows whether the person has since opted out, so nothing
+   * leaves the app until it has agreed. Its refusal is shown as a toast.
+   */
+  const recordFirst = useCallback(
+    async (draft: MessageDraft, body: string, status: ManualCommunicationStatus, taskId?: TaskId) => {
+      const outcome = await dispatch(
+        "communication.log",
+        { personId: draft.personId, channel: draft.channel, status, body, templateId: draft.templateId, taskId },
+        { silent: true },
+      );
+      return outcome.ok;
     },
-    [log],
+    [dispatch],
+  );
+
+  /** Copies the final text once the server has accepted the record. */
+  const copyAndLog = useCallback(
+    async (draft: MessageDraft, body: string, taskId?: TaskId): Promise<boolean> => {
+      if (!(await recordFirst(draft, body, "copied", taskId))) return false;
+      try {
+        await navigator.clipboard.writeText(body);
+      } catch {
+        toast.error("Could not reach the clipboard. Select the text and copy it yourself.");
+        return false;
+      }
+      toast.success("Copied");
+      return true;
+    },
+    [recordFirst],
+  );
+
+  /** Opens the person's own messaging app once the server has accepted the record. */
+  const openExternally = useCallback(
+    async (draft: MessageDraft, body: string, taskId?: TaskId): Promise<boolean> => {
+      const link = linkFor(draft, body);
+      if (!link) {
+        toast.error("There's no usable contact detail for that way of sending.");
+        return false;
+      }
+      if (!(await recordFirst(draft, body, "opened_external", taskId))) return false;
+      // Web links open beside the app; mailto, sms and tel hand over in place,
+      // which no popup blocker stops.
+      if (link.startsWith("https://")) window.open(link, "_blank", "noopener,noreferrer");
+      else window.location.assign(link);
+      toast.success("Opened in your messaging app");
+      return true;
+    },
+    [linkFor, recordFirst],
   );
 
   /**
@@ -161,6 +192,7 @@ export function useCommunications() {
     sendEmail,
     copyAndLog,
     openExternally,
+    linkFor,
     addTemplate,
     editTemplate,
     removeTemplate,

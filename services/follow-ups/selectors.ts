@@ -1,4 +1,5 @@
 import { toIsoDate } from "@/lib/dates";
+import { foldForSearch, matchesPersonQuery } from "@/lib/person-search";
 import { ratio } from "@/lib/metrics";
 import type { IsoDate, PersonId, TeamMemberId } from "@/types/common";
 import type { FollowUpTask, TaskStatus } from "@/types/follow-up";
@@ -13,6 +14,8 @@ export interface TaskWithPerson {
   task: FollowUpTask;
   person?: Person;
   assigneeName?: string;
+  /** Assigned to somebody who is no longer active, so nobody is doing it. */
+  ownerInactive: boolean;
   overdue: boolean;
   dueToday: boolean;
 }
@@ -23,6 +26,8 @@ export interface TaskFilters {
   personId?: PersonId;
   type?: readonly FollowUpTask["type"][];
   priority?: readonly FollowUpTask["priority"][];
+  /** A single task, for a deep link such as `?task=`. */
+  taskId?: string;
   /** `overdue`, `today`, `upcoming` or `all`. */
   due?: "overdue" | "today" | "upcoming" | "all";
   search?: string;
@@ -34,6 +39,23 @@ export function isOverdue(task: FollowUpTask, today: IsoDate): boolean {
 
 export function isDueToday(task: FollowUpTask, today: IsoDate): boolean {
   return isOpen(task) && task.dueDate === today;
+}
+
+/**
+ * An open task nobody active is responsible for: never assigned, or assigned
+ * to somebody since marked inactive. Both need a coordinator to pick an owner,
+ * so both count as "no owner" in lists and on the dashboard.
+ */
+export function needsOwner(task: FollowUpTask, snapshot: Pick<ChurchSnapshot, "team">): boolean {
+  if (!isOpen(task)) return false;
+  if (!task.assigneeId) return true;
+  const owner = snapshot.team.find((member) => member.id === task.assigneeId);
+  return !owner?.active;
+}
+
+/** Whether every status asked for is a finished one (completed or cancelled). */
+function onlyFinished(statuses: readonly TaskStatus[] | undefined): boolean {
+  return Boolean(statuses?.length) && statuses!.every((status) => status === "completed" || status === "cancelled");
 }
 
 export function openTasks(snapshot: ChurchSnapshot): FollowUpTask[] {
@@ -65,7 +87,8 @@ export function selectTasks(
   const today = toIsoDate(now);
   const peopleById = new Map(snapshot.people.map((person) => [person.id, person]));
   const teamById = new Map(snapshot.team.map((member) => [member.id, member]));
-  const search = filters.search?.trim().toLowerCase();
+  const finishedFirst = onlyFinished(filters.status);
+  const search = filters.search?.trim() ?? "";
 
   return snapshot.tasks
     .filter((task) => {
@@ -73,7 +96,10 @@ export function selectTasks(
       if (filters.type && !filters.type.includes(task.type)) return false;
       if (filters.priority && !filters.priority.includes(task.priority)) return false;
       if (filters.personId && task.personId !== filters.personId) return false;
-      if (filters.assigneeId === "unassigned" && task.assigneeId) return false;
+      if (filters.taskId && task.id !== filters.taskId) return false;
+      if (filters.assigneeId === "unassigned" && task.assigneeId && !needsOwner(task, snapshot)) {
+        return false;
+      }
       if (
         filters.assigneeId &&
         filters.assigneeId !== "unassigned" &&
@@ -87,14 +113,8 @@ export function selectTasks(
 
       if (search) {
         const person = peopleById.get(task.personId);
-        const haystack = [
-          task.reference,
-          task.notes ?? "",
-          person ? `${person.firstName} ${person.lastName}` : "",
-        ]
-          .join(" ")
-          .toLowerCase();
-        if (!haystack.includes(search)) return false;
+        const inTask = foldForSearch(`${task.reference} ${task.notes ?? ""}`).includes(foldForSearch(search));
+        if (!inTask && !(person && matchesPersonQuery(person, search))) return false;
       }
 
       return true;
@@ -103,10 +123,17 @@ export function selectTasks(
       task,
       person: peopleById.get(task.personId),
       assigneeName: task.assigneeId ? teamById.get(task.assigneeId)?.name : undefined,
+      ownerInactive: Boolean(task.assigneeId) && isOpen(task) && !teamById.get(task.assigneeId!)?.active,
       overdue: isOverdue(task, today),
       dueToday: isDueToday(task, today),
     }))
     .sort((left, right) => {
+      // Finished work reads like a log: the most recently finished first.
+      if (finishedFirst) {
+        const leftAt = left.task.completedAt ?? left.task.dueDate;
+        const rightAt = right.task.completedAt ?? right.task.dueDate;
+        if (leftAt !== rightAt) return leftAt < rightAt ? 1 : -1;
+      }
       if (left.task.dueDate !== right.task.dueDate) {
         return left.task.dueDate < right.task.dueDate ? -1 : 1;
       }

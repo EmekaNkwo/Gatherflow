@@ -1,8 +1,9 @@
 "use client";
 
+import { showFormError } from "@/lib/form-toast";
+import { toast } from "sonner";
 import { Suspense, useState, type FormEvent } from "react";
 import { useSearchParams } from "next/navigation";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
@@ -11,6 +12,11 @@ import { LinkButton } from "@/components/shared/link-button";
 import { authClient } from "@/lib/auth-client";
 
 /** The end of a reset link: a new password, once. */
+/** What went wrong, as a toast: the server"s words, then what to do next. */
+function showError(message: string): void {
+  showFormError("Could not change the password", message, "If it keeps happening, ask for a new reset link.");
+}
+
 export default function ResetPasswordPage() {
   return (
     <Suspense>
@@ -25,20 +31,19 @@ function ResetPasswordForm() {
   const expired = params.get("error") === "INVALID_TOKEN";
   const [password, setPassword] = useState("");
   const [done, setDone] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitting(true);
-    setError(null);
     const outcome = await authClient.resetPassword({ newPassword: password, token });
     setSubmitting(false);
     if (outcome.error) {
-      setError(outcome.error.message ?? "The password could not be changed.");
+      showError(outcome.error.message ?? "The password could not be changed.");
       return;
     }
     setDone(true);
+    toast.success("Password changed");
   }
 
   if (expired || !token) {
@@ -75,15 +80,6 @@ function ResetPasswordForm() {
               <Input id="reset-password" type="password" className={AUTH_INPUT} autoComplete="new-password" required minLength={12} value={password} onChange={(event) => setPassword(event.target.value)} />
               <FieldDescription>At least 12 characters.</FieldDescription>
             </Field>
-            {error ? (
-              <Alert variant="destructive">
-                <AlertTitle>Could not change the password</AlertTitle>
-                <AlertDescription>
-                  <span className="block">{error}</span>
-                  <span className="block">If it keeps happening, ask for a new reset link.</span>
-                </AlertDescription>
-              </Alert>
-            ) : null}
             <Button type="submit" size="lg" className={AUTH_PRIMARY} disabled={submitting || password.length < 12}>
               {submitting ? "Saving…" : "Change password"}
             </Button>

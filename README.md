@@ -28,7 +28,7 @@ docker run -d --name gatherflow-pg \
 
 npm install
 npm run db:migrate                # apply migrations before the first run
-npm run dev                       # http://localhost:3000
+npm run dev                       # http://localhost:3100 (a fixed port: see .env.example)
 ```
 
 Open the landing page, choose **Create your church**, and you are its administrator. Everything
@@ -240,8 +240,15 @@ excluded from pastoral care, and a test pins that.
 **Commands run against the whole church.** `runCommand` authorises, then loads the *full*
 snapshot — the rules need every task to recognise a duplicate automation key and every attendance
 row to count a visit. Narrowing what a caller may read must not narrow what the rules reason
-about. The result is scoped again before it leaves. Commits are retried on a version conflict and
-refused after three collisions.
+about. The result is scoped again before it leaves. Commits are retried on a version conflict,
+with a short random wait between attempts, and refused after twelve collisions.
+
+**A request that arrives twice is done once.** The browser gives every command a request id and
+reuses it when it sends the same request again — after a dropped connection, or when somebody taps
+again because no answer came. The server claims the id in `command_receipts` before running the
+command and answers a repeat from the first result, so a weak signal at the welcome desk cannot
+create a second visitor or a second follow-up. A refused command releases its claim, so a retry
+can run it; receipts are pruned after a day.
 
 **Every request leaves a trace.** `audit_log` is written by the server for each command,
 email send, provider-driven opt-out, unsubscribe, invitation, membership change, backup and
@@ -255,7 +262,10 @@ whole church, pastoral care included — which is exactly why it sits behind the
 secret rather than any role, since no role may export care records. It never creates or seeds
 anything by looking. `POST /api/ops/restore` puts a backup back under the usual version guard,
 and refuses a file that is not whole rather than dropping records. `scripts/church-backup.mjs`
-wraps both.
+wraps both. `POST /api/ops/repair-visits` (`?church=<id>`, `&dryRun=1` to only report) corrects
+first-visit records saved before first visits were worked out from service dates: a visitor
+welcomed on an earlier service whose first visit was stored as the day they were entered, and
+stale first-visit flags on attendance rows. It changes nothing on a second run.
 
 **Requests are validated before they reach a command.** The domain commands take typed input and
 trust it. A request body guarantees nothing, so `server/church/input.ts` parses it first and
@@ -351,8 +361,8 @@ in the queue comes from the database, never from the caller's clock.
 
 ```bash
 # Unset MAILJET_* and the application just does not offer to send.
-curl -XPOST -H "authorization: Bearer $CRON_SECRET" localhost:3000/api/cron/drain-outbox
-curl -H "authorization: Bearer $CRON_SECRET" localhost:3000/api/email/health   # 503 when a human is needed
+curl -XPOST -H "authorization: Bearer $CRON_SECRET" localhost:3100/api/cron/drain-outbox
+curl -H "authorization: Bearer $CRON_SECRET" localhost:3100/api/email/health   # 503 when a human is needed
 ```
 
 The drain is scheduled by the host, not by the application: `vercel.json` declares it as a
@@ -379,7 +389,7 @@ Someone in several churches gets one message covering all of them.
 
 ```bash
 npx web-push generate-vapid-keys   # once; set VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT
-curl -XPOST -H "authorization: Bearer $CRON_SECRET" localhost:3000/api/cron/reminders
+curl -XPOST -H "authorization: Bearer $CRON_SECRET" localhost:3100/api/cron/reminders
 ```
 
 The first call of a UTC day sends that day's reminders; each browser gets at most one a day, so

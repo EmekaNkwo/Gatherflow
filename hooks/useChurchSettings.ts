@@ -2,8 +2,8 @@
 
 import { useCallback, useMemo } from "react";
 import type { PipelineStage } from "@/types/follow-up";
+import type { AutomationRuleChanges, ProfileChanges } from "@/services/settings/settings";
 import type {
-  AutomationRuleConfig,
   AutomationRuleId,
   EngagementCriteria,
   ServiceDefinition,
@@ -25,13 +25,13 @@ export function useChurchSettings() {
   );
 
   const saveProfile = useCallback(
-    (changes: { churchName?: string; timezoneLabel?: string; defaultFollowUpDueInDays?: number }) =>
+    (changes: ProfileChanges) =>
       dispatch("settings.updateProfile", changes),
     [dispatch],
   );
 
   const saveRule = useCallback(
-    (id: AutomationRuleId, changes: Partial<Omit<AutomationRuleConfig, "id">>) =>
+    (id: AutomationRuleId, changes: AutomationRuleChanges) =>
       dispatch("settings.updateAutomationRule", { id, changes }),
     [dispatch],
   );
@@ -66,6 +66,13 @@ export function useChurchSettings() {
     [dispatch],
   );
 
+  /** Moves every open follow-up from one team member to another. */
+  const reassignOpenTasks = useCallback(
+    (fromTeamMemberId: string, toTeamMemberId: string) =>
+      dispatch("settings.reassignOpenTasks", { fromTeamMemberId, toTeamMemberId }),
+    [dispatch],
+  );
+
   return {
     settings: snapshot.settings,
     rules,
@@ -80,5 +87,6 @@ export function useChurchSettings() {
     saveServices,
     saveTeamMember,
     setMemberActive,
+    reassignOpenTasks,
   };
 }

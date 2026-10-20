@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { InboxIcon, LockIcon, SearchXIcon, type LucideIcon } from "lucide-react";
+import { RestrictedReason } from "./restricted-reason";
 import {
   Empty,
   EmptyContent,
@@ -11,7 +12,7 @@ import {
 
 interface EmptyStateProps {
   title: string;
-  description: string;
+  description: ReactNode;
   icon?: LucideIcon;
   action?: ReactNode;
 }
@@ -56,7 +57,7 @@ export function RestrictedState({ section }: { section: string }) {
     <EmptyState
       icon={LockIcon}
       title={`${section} is restricted`}
-      description="Your role is not authorised to see this section. Ask an administrator if you need access."
+      description={<RestrictedReason />}
     />
   );
 }

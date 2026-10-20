@@ -24,14 +24,20 @@ export interface CompleteTaskInput {
 /** Outcomes that mean we actually reached the person. */
 const SUCCESSFUL_OUTCOMES: readonly TaskOutcome[] = ["contacted"];
 
-/** Outcomes that count as a contact attempt, whether or not we got through. */
+/**
+ * Outcomes that count as a contact attempt, whether or not we got through.
+ * "Something else" is deliberately not one: it says nothing about a try to
+ * reach them, so it must not bring the "stop after N attempts" rule closer.
+ */
 const ATTEMPT_OUTCOMES: readonly TaskOutcome[] = [
   "contacted",
   "no_answer",
   "requested_another_time",
   "wrong_details",
-  "other",
 ];
+
+/** Outcomes that mean nothing without a note saying what happened. */
+export const OUTCOMES_NEEDING_A_NOTE: readonly TaskOutcome[] = ["other"];
 
 /** Outcomes that stop follow-up, with the closure they record. */
 const CLOSING_OUTCOMES: Partial<Record<TaskOutcome, ClosureReason>> = {
@@ -53,6 +59,9 @@ export function completeTask(
   const task = snapshot.tasks.find((entry) => entry.id === input.taskId);
   if (!task) return err("That task no longer exists.", "not_found");
   if (!isOpen(task)) return err("That task has already been closed.", "closed");
+  if (OUTCOMES_NEEDING_A_NOTE.includes(input.outcome) && !input.outcomeNote?.trim()) {
+    return err("Add a short note saying what happened.", "invalid");
+  }
 
   const person = findPerson(snapshot, task.personId);
   if (!person) return err("That person is no longer in the directory.", "not_found");
@@ -206,8 +215,11 @@ function applyOutcomeToVisitor(
   const closed = closureStage(settings);
   const stageId = closureReason
     ? closed?.id
-    : (succeeded ? advanceStage(settings, person, "contacted") : advanceStage(settings, person, "contact_attempted")) ??
-      undefined;
+    : succeeded
+      ? (advanceStage(settings, person, "contacted") ?? undefined)
+      : attempted
+        ? (advanceStage(settings, person, "contact_attempted") ?? undefined)
+        : undefined;
 
   return {
     update: (entry) =>

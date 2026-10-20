@@ -16,7 +16,11 @@ import { auditLog } from "@/server/db/schema";
 
 export const SYSTEM_USER = "system";
 
-export type AuditOutcome = "ok" | "refused" | "failed";
+/**
+ * `skipped` is for something deliberately not attempted, such as an
+ * invitation email when the deployment has no email set up: nothing failed.
+ */
+export type AuditOutcome = "ok" | "refused" | "failed" | "skipped";
 
 export interface AuditEntry {
   churchId: string;
@@ -94,6 +98,10 @@ export function targetOf(input: unknown): string | null {
     "stageId",
     "appointmentId",
     "ruleId",
+    "fromTeamMemberId",
+    // Commands that change one thing of their own name it `id` — an
+    // automation rule, or a team member being edited.
+    "id",
   ]) {
     const value = candidate[key];
     if (typeof value === "string" && value) return value;

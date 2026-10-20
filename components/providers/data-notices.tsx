@@ -1,8 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { WelcomeButton } from "@/components/visitors/welcome-button";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { AlertTriangleIcon, SparklesIcon, XIcon } from "lucide-react";
+import { SparklesIcon, XIcon } from "lucide-react";
+import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useChurchStore } from "@/stores/church-store";
@@ -10,28 +12,28 @@ import { useChurchStore } from "@/stores/church-store";
 /**
  * Tells the user when stored records had to be repaired, and welcomes a
  * brand-new church. Recovering quietly would be worse: if records were
- * dropped, the person using the app should know why the numbers changed.
+ * dropped, the person using the app should know why the numbers changed —
+ * so that warning is a toast that stays until it is dismissed.
  */
 export function DataNotices() {
   const report = useChurchStore((state) => state.report);
   const isNew = useChurchStore((state) => (state.snapshot?.people.length ?? 1) === 0);
   const [dismissed, setDismissed] = useState(false);
 
-  const hasIssues = Boolean(report?.issues.length);
-  if (dismissed || (!hasIssues && !isNew)) return null;
+  const issues = report?.issues.join(" ");
+  useEffect(() => {
+    if (!issues) return;
+    toast.warning("Some stored records could not be read", {
+      id: "records-issue",
+      description: `${issues} Everything else loaded as usual.`,
+      duration: Infinity,
+    });
+  }, [issues]);
+
+  if (dismissed || !isNew) return null;
 
   return (
     <div className="space-y-3 px-4 pt-4 lg:px-6">
-      {hasIssues ? (
-        <Alert variant="destructive">
-          <AlertTriangleIcon />
-          <AlertTitle>Some stored records could not be read</AlertTitle>
-          <AlertDescription>
-            {report?.issues.join(" ")} Everything else loaded as usual.
-          </AlertDescription>
-        </Alert>
-      ) : null}
-
       {isNew ? (
         <Alert>
           <SparklesIcon />
@@ -42,9 +44,9 @@ export function DataNotices() {
               checking the settings
             </Link>{" "}
             and{" "}
-            <Link href="/visitors/new" className="underline">
+            <WelcomeButton mode="full" variant="link" className="h-auto p-0 align-baseline text-sm underline">
               registering your first visitor
-            </Link>
+            </WelcomeButton>
             , or invite your team from Settings → Team.
           </AlertDescription>
           <Button

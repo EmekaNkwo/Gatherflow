@@ -12,7 +12,7 @@ import {
 import type { TeamMemberId } from "@/types/common";
 import type { Capability } from "@/types/team";
 import type { ChurchSnapshot } from "@/types/snapshot";
-import { authorize, scopeFor } from "@/server/auth/authorize";
+import { authorize, authorizeOwnership, scopeFor } from "@/server/auth/authorize";
 import type { ChurchSession } from "@/server/auth/session";
 import type { Database } from "@/server/db/client";
 import { createPostgresSnapshotRepository } from "@/server/db/snapshot-repository";
@@ -27,8 +27,26 @@ import { createPostgresSnapshotRepository } from "@/server/db/snapshot-repositor
  * guarded by the version that was read.
  */
 
-/** How many times a commit is retried after losing a concurrency race. */
-const MAX_ATTEMPTS = 3;
+/**
+ * How many times a commit is tried before giving up on a concurrency race.
+ * A Sunday morning has several volunteers checking people in at once; each
+ * commit is short, so a handful of retries lets a burst of check-ins through.
+ */
+export const MAX_ATTEMPTS = 12;
+/** Base for the randomised pause between attempts, in milliseconds. */
+const RETRY_BASE_MS = 15;
+/** Longest pause between attempts, in milliseconds. */
+const RETRY_CAP_MS = 400;
+
+/**
+ * Waits before the next attempt after losing a race: "full jitter" backoff,
+ * so writers that collided once do not collide again in lock-step.
+ */
+function backoff(attempt: number): Promise<void> {
+  const ceiling = Math.min(RETRY_CAP_MS, RETRY_BASE_MS * 2 ** attempt);
+  const delay = Math.random() * ceiling;
+  return new Promise((resolve) => setTimeout(resolve, delay));
+}
 
 export interface ChurchContext {
   db: Database;
@@ -115,15 +133,23 @@ export async function runSystemCommand(
       });
     }
     if (saved.code !== CONFLICT) return saved;
+    await backoff(attempt);
   }
 
   return err("Could not apply the provider's report; it will be retried.", CONFLICT);
 }
 
+/**
+ * Whether this particular request is the caller's to make, for a role scoped
+ * to its own work. Judged against the full church, before the command runs.
+ */
+export type OwnershipCheck = (snapshot: ChurchSnapshot, teamMemberId: string) => boolean;
+
 export async function runCommand(
   context: ChurchContext,
   capability: Capability,
   command: Command,
+  ownedBy?: OwnershipCheck,
 ): Promise<Result<CommandResult>> {
   const permitted = authorize(context.session, capability);
   if (!permitted.ok) return permitted;
@@ -132,6 +158,9 @@ export async function runCommand(
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     const current = await repository.load(FULL_SCOPE);
+
+    const owned = authorizeOwnership(context.session, current.snapshot, ownedBy);
+    if (!owned.ok) return owned;
 
     const ctx = createCommandContext({
       actorId: (context.session.teamMemberId ?? context.session.userId) as TeamMemberId,
@@ -157,6 +186,7 @@ export async function runCommand(
 
     // Anything other than losing the race is a real failure.
     if (saved.code !== CONFLICT) return saved;
+    await backoff(attempt);
   }
 
   return err(

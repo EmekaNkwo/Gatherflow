@@ -1,5 +1,6 @@
 "use client";
 
+import { WelcomeButton } from "@/components/visitors/welcome-button";
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { format } from "date-fns";
@@ -51,7 +52,8 @@ export default function TodayPage() {
   const onComplete = async (outcome: TaskOutcome, note?: string) => {
     if (!completing) return;
     const result = await today.complete(completing.task.id, outcome, note);
-    if (result.ok) setCompleting(null);
+    // A task finished elsewhere is re-read; keeping the dialog would only refuse again.
+    if (result.ok || result.code === "closed" || result.code === "not_found") setCompleting(null);
   };
 
   const onReschedule = async (dueDate: string, reason?: string) => {
@@ -78,12 +80,10 @@ export default function TodayPage() {
         <p className="mt-3 max-w-xl text-lg md:text-xl">
           {workSentence({ dueToday: today.tasks.length, overdue: overdue.tasks.length })}
         </p>
-        {can("visitors.write") ? (
-          <LinkButton size="lg" href="/visitors/quick" className="mt-6 rounded-full">
-            <UserPlusIcon />
-            Welcome someone new
-          </LinkButton>
-        ) : null}
+        <WelcomeButton size="lg" className="mt-6 rounded-full">
+          <UserPlusIcon />
+          Welcome someone new
+        </WelcomeButton>
       </section>
 
       {overdue.tasks.length ? (

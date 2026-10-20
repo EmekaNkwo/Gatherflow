@@ -14,11 +14,11 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
 import { CareStatusBadge, RestrictedBadge } from "@/components/shared/badges";
 import { EmptyState, RestrictedState } from "@/components/shared/empty-state";
 import { PageHeader, PageShell, Section } from "@/components/shared/page-header";
+import { SelectField, type SelectOption } from "@/components/shared/select-field";
 import { formatDisplayDate, toIsoDate } from "@/lib/dates";
 import { displayName, normalise } from "@/lib/strings";
 import {
@@ -32,6 +32,15 @@ import { useRole } from "@/hooks/useRole";
 import { useNow } from "@/hooks/use-now";
 import { usePastoralCare } from "@/hooks/usePastoralCare";
 import { useSnapshot } from "@/hooks/use-church-data";
+
+const CARE_STATUS_OPTIONS: SelectOption[] = CARE_STATUSES.map((status) => ({
+  value: status,
+  label: CARE_STATUS_LABELS[status],
+}));
+
+const CARE_CATEGORY_OPTIONS: SelectOption[] = (Object.keys(CARE_CATEGORY_LABELS) as CareCategory[]).map(
+  (option) => ({ value: option, label: CARE_CATEGORY_LABELS[option] }),
+);
 
 /**
  * Pastoral care, restricted to pastors: the people being cared for now
@@ -158,17 +167,13 @@ export default function PastoralCarePage() {
                 ) : null}
 
                 <div className="flex flex-wrap items-center gap-2">
-                  <NativeSelect
+                  <SelectField
                     aria-label={`Status for ${record.reference}`}
                     value={record.status}
-                    onChange={(event) => care.setStatus(record.id, event.target.value as CareStatus)}
-                  >
-                    {CARE_STATUSES.map((status) => (
-                      <NativeSelectOption key={status} value={status}>
-                        {CARE_STATUS_LABELS[status]}
-                      </NativeSelectOption>
-                    ))}
-                  </NativeSelect>
+                    onValueChange={(value) => care.setStatus(record.id, value as CareStatus)}
+                    className="w-auto"
+                    options={CARE_STATUS_OPTIONS}
+                  />
                   <Button variant="outline" className="min-h-11 rounded-full" onClick={() => setNoteFor(record.id)}>
                     Add a note
                   </Button>
@@ -350,36 +355,25 @@ function NewCareRecordDialog({
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Search by name"
           />
-          <NativeSelect
-            className="mt-2 w-full"
+          <SelectField
+            className="mt-2"
             aria-label="Select a person"
             value={personId}
-            onChange={(event) => setPersonId(event.target.value)}
-          >
-            <NativeSelectOption value="">Choose someone…</NativeSelectOption>
-            {matches.map((person) => (
-              <NativeSelectOption key={person.id} value={person.id}>
-                {displayName(person)}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
+            onValueChange={setPersonId}
+            options={[
+              { value: "", label: "Choose someone…" },
+              ...matches.map((person) => ({ value: person.id, label: displayName(person) })),
+            ]}
+          />
         </Field>
 
-        <Field>
-          <FieldLabel htmlFor="care-category">Kind of care</FieldLabel>
-          <NativeSelect
-            className="w-full"
-            id="care-category"
-            value={category}
-            onChange={(event) => setCategory(event.target.value as CareCategory)}
-          >
-            {(Object.keys(CARE_CATEGORY_LABELS) as CareCategory[]).map((option) => (
-              <NativeSelectOption key={option} value={option}>
-                {CARE_CATEGORY_LABELS[option]}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
-        </Field>
+        <SelectField
+          id="care-category"
+          label="Kind of care"
+          value={category}
+          onValueChange={(value) => setCategory(value as CareCategory)}
+          options={CARE_CATEGORY_OPTIONS}
+        />
 
         <Field>
           <FieldLabel htmlFor="care-summary">Short description</FieldLabel>

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ok, type Result } from "@/lib/result";
+import { displayName } from "@/lib/strings";
 import type { CommandContext } from "@/services/core/context";
 import type { CommandResult } from "@/services/core/events";
 import type { ChurchSnapshot } from "@/types/snapshot";
@@ -12,12 +13,14 @@ import { SERVICE_TYPES } from "@/types/attendance";
 import { GROUP_TYPES, WEEKDAYS } from "@/types/group";
 import { CARE_STATUSES } from "@/types/care";
 import { DEMO_ROLES } from "@/types/team";
+import { looksAfter, ownsTask } from "./ownership";
 import { AUTOMATION_RULE_IDS } from "@/types/settings";
 
 import { registerVisitor, recordReturnVisit } from "@/services/visitors/registration";
 import {
   assignVisitor,
   closeFollowUp,
+  reopenFollowUp,
   setContactPreferences,
   setStage,
 } from "@/services/visitors/pipeline";
@@ -45,12 +48,17 @@ import {
   setHousehold,
 } from "@/services/people/people";
 import {
-  importAttendanceCsv,
   moveAttendance,
   recordAttendance,
   removeAttendance,
 } from "@/services/attendance/check-in";
-import { createSession, updateSessionNotes } from "@/services/attendance/sessions";
+import { importAttendanceCsv } from "@/services/attendance/csv-import";
+import {
+  createSession,
+  deleteSession,
+  updateSession,
+  updateSessionNotes,
+} from "@/services/attendance/sessions";
 import {
   addGroupMember,
   createGroup,
@@ -72,6 +80,7 @@ import {
   updateCareRecord,
 } from "@/services/care/care";
 import {
+  reassignOpenTasks,
   setTeamMemberActive,
   updateAutomationRule,
   updateChurchProfile,
@@ -110,10 +119,25 @@ function enumOf<T extends string>(values: readonly T[]) {
  */
 const MAX_BULK = 500;
 
+/** Why a bulk assignment left somebody out, in a few plain words. */
+const BULK_SKIP_REASONS: Record<string, string> = {
+  opted_out: "asked not to be contacted",
+  closed: "follow-up stopped",
+  unchanged: "already theirs",
+  inactive: "that helper is inactive",
+};
+
 const id = z.string().min(1);
 const optionalId = id.optional();
-const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD");
-const timeOfDay = z.string().regex(/^\d{2}:\d{2}$/, "expected HH:mm");
+/** A real calendar day: the shape is not enough, 2026-02-31 is refused. */
+const isoDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, "must be a date")
+  .refine((value) => {
+    const parsed = new Date(`${value}T00:00:00.000Z`);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().startsWith(value);
+  }, "must be a real date");
+const timeOfDay = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "must be a time between 00:00 and 23:59");
 const shortText = z.string().max(500);
 const name = z.string().trim().min(1).max(80);
 
@@ -169,6 +193,13 @@ const communicationStatus = enumOf(MANUAL_COMMUNICATION_STATUSES);
 export interface CommandDefinition<I, R extends CommandResult = CommandResult> {
   /** Checked by the server before the command runs. */
   capability: Capability;
+  /**
+   * For a role scoped to its own work (a volunteer): whether this particular
+   * request is theirs to make. Checked by the server against the full church
+   * before the command runs, and by the interface before offering it. Absent
+   * means the capability alone decides.
+   */
+  ownedBy?: (snapshot: ChurchSnapshot, input: I, teamMemberId: string) => boolean;
   /** Validates a request body. The browser's input is already typed. */
   schema: z.ZodType<I>;
   run: (snapshot: ChurchSnapshot, input: I, ctx: CommandContext) => Result<R>;
@@ -184,6 +215,7 @@ export const COMMANDS = {
   // --- Visitors -----------------------------------------------------------
   "visitor.register": define({
     capability: "visitors.write",
+    ownedBy: (_snapshot, input, me) => !input.assignedTo || input.assignedTo === me,
     schema: z.object({
       firstName: name,
       lastName: name,
@@ -220,12 +252,14 @@ export const COMMANDS = {
 
   "visitor.setStage": define({
     capability: "visitors.write",
+    ownedBy: (snapshot, input, me) => looksAfter(snapshot, input.personId, me),
     schema: z.object({ personId: id, stageId: id }),
     run: (snapshot, input, ctx) => setStage(snapshot, input.personId, input.stageId, ctx),
   }),
 
   "visitor.closeFollowUp": define({
     capability: "tasks.write",
+    ownedBy: (snapshot, input, me) => looksAfter(snapshot, input.personId, me),
     schema: z.object({
       personId: id,
       reason: closureReason,
@@ -233,6 +267,13 @@ export const COMMANDS = {
       optOut: z.boolean().optional(),
     }),
     run: closeFollowUp,
+  }),
+
+  "visitor.reopenFollowUp": define({
+    capability: "tasks.write",
+    ownedBy: (snapshot, input, me) => looksAfter(snapshot, input.personId, me),
+    schema: z.object({ personId: id, stageId: optionalId }),
+    run: reopenFollowUp,
   }),
 
   "visitor.setContactPreferences": define({
@@ -249,6 +290,7 @@ export const COMMANDS = {
 
   "visitor.recordMembershipInterest": define({
     capability: "visitors.write",
+    ownedBy: (snapshot, input, me) => looksAfter(snapshot, input.personId, me),
     schema: z.object({ personId: id }),
     run: (snapshot, input, ctx) => recordMembershipInterest(snapshot, input.personId, ctx),
   }),
@@ -256,6 +298,7 @@ export const COMMANDS = {
   // --- Follow-up tasks ----------------------------------------------------
   "task.create": define({
     capability: "tasks.write",
+    ownedBy: (_snapshot, input, me) => input.assigneeId === me,
     schema: z.object({
       personId: id,
       type: enumOf(FOLLOW_UP_TASK_TYPES),
@@ -272,6 +315,7 @@ export const COMMANDS = {
 
   "task.complete": define({
     capability: "tasks.write",
+    ownedBy: (snapshot, input, me) => ownsTask(snapshot, input.taskId, me),
     schema: z.object({
       taskId: id,
       outcome: enumOf(TASK_OUTCOMES),
@@ -282,6 +326,7 @@ export const COMMANDS = {
 
   "task.reschedule": define({
     capability: "tasks.write",
+    ownedBy: (snapshot, input, me) => ownsTask(snapshot, input.taskId, me),
     schema: z.object({ taskId: id, dueDate: isoDate, reason: shortText.optional() }),
     run: (snapshot, input, ctx) =>
       rescheduleTask(snapshot, input.taskId, input.dueDate, input.reason, ctx),
@@ -296,12 +341,14 @@ export const COMMANDS = {
 
   "task.start": define({
     capability: "tasks.write",
+    ownedBy: (snapshot, input, me) => ownsTask(snapshot, input.taskId, me),
     schema: z.object({ taskId: id }),
     run: (snapshot, input) => startTask(snapshot, input.taskId),
   }),
 
   "task.cancel": define({
     capability: "tasks.write",
+    ownedBy: (snapshot, input, me) => ownsTask(snapshot, input.taskId, me),
     schema: z.object({ taskId: id, reason: shortText.optional() }),
     run: (snapshot, input, ctx) => cancelTask(snapshot, input.taskId, input.reason, ctx),
   }),
@@ -316,25 +363,39 @@ export const COMMANDS = {
     run: (snapshot, input, ctx) => {
       let current = snapshot;
       let assigned = 0;
+      const skipped: string[] = [];
       for (const personId of input.personIds) {
         const outcome = assignVisitor(current, personId, input.assigneeId, ctx);
-        // A refusal for one person — opted out, already gone — must not abort
-        // the rest of the batch, so it is counted and skipped.
+        // A refusal for one person — opted out, follow-up stopped, already
+        // theirs, gone — must not abort the rest of the batch. It is named
+        // in the notice instead of being silently counted as done.
         if (outcome.ok) {
           current = outcome.value.snapshot;
           assigned += 1;
+        } else {
+          const person = current.people.find((entry) => entry.id === personId);
+          if (!person) {
+            skipped.push("someone no longer listed");
+          } else {
+            const reason = person.visitor ? (BULK_SKIP_REASONS[outcome.code ?? ""] ?? "not changed") : "not a visitor";
+            skipped.push(`${displayName(person)} (${reason})`);
+          }
         }
       }
       return ok({
         snapshot: current,
         events: [],
-        notices: [`${assigned} visitor${assigned === 1 ? "" : "s"} assigned.`],
+        notices: [
+          `${assigned} visitor${assigned === 1 ? "" : "s"} assigned.`,
+          ...(skipped.length ? [`Skipped ${skipped.length}: ${skipped.join(", ")}.`] : []),
+        ],
       });
     },
   }),
 
   "task.createForPeople": define({
     capability: "tasks.write",
+    ownedBy: (_snapshot, input, me) => input.input.assigneeId === me,
     schema: z.object({
       personIds: z.array(id).min(1).max(MAX_BULK),
       input: z.object({
@@ -456,7 +517,7 @@ export const COMMANDS = {
 
   // --- Attendance ---------------------------------------------------------
   "session.create": define({
-    capability: "attendance.write",
+    capability: "sessions.manage",
     schema: z.object({
       name: name,
       date: isoDate,
@@ -466,6 +527,26 @@ export const COMMANDS = {
       notes: shortText.optional(),
     }),
     run: createSession,
+  }),
+
+  "session.update": define({
+    capability: "sessions.manage",
+    schema: z.object({
+      sessionId: id,
+      name: name,
+      date: isoDate,
+      startTime: timeOfDay,
+      type: enumOf(SERVICE_TYPES),
+      groupId: optionalId,
+      notes: shortText.optional(),
+    }),
+    run: updateSession,
+  }),
+
+  "session.delete": define({
+    capability: "sessions.manage",
+    schema: z.object({ sessionId: id }),
+    run: (snapshot, input, ctx) => deleteSession(snapshot, input.sessionId, ctx),
   }),
 
   "session.updateNotes": define({
@@ -550,12 +631,13 @@ export const COMMANDS = {
   "group.setActive": define({
     capability: "groups.write",
     schema: z.object({ groupId: id, active: z.boolean() }),
-    run: (snapshot, input) => setGroupActive(snapshot, input.groupId, input.active),
+    run: (snapshot, input, ctx) => setGroupActive(snapshot, input.groupId, input.active, ctx),
   }),
 
   // --- Communications -----------------------------------------------------
   "communication.log": define({
     capability: "communications.write",
+    ownedBy: (snapshot, input, me) => looksAfter(snapshot, input.personId, me),
     schema: z.object({
       personId: id,
       templateId: optionalId,
@@ -568,7 +650,7 @@ export const COMMANDS = {
   }),
 
   "template.create": define({
-    capability: "communications.write",
+    capability: "templates.manage",
     schema: z.object({
       name: name,
       category: templateCategory,
@@ -579,7 +661,7 @@ export const COMMANDS = {
   }),
 
   "template.update": define({
-    capability: "communications.write",
+    capability: "templates.manage",
     schema: z.object({
       templateId: id,
       input: z.object({
@@ -594,7 +676,7 @@ export const COMMANDS = {
   }),
 
   "template.delete": define({
-    capability: "communications.write",
+    capability: "templates.manage",
     schema: z.object({ templateId: id }),
     run: (snapshot, input) => deleteTemplate(snapshot, input.templateId),
   }),
@@ -668,6 +750,7 @@ export const COMMANDS = {
       churchName: name.optional(),
       timezoneLabel: z.string().trim().max(60).optional(),
       defaultFollowUpDueInDays: z.number().int().min(0).max(90).optional(),
+      defaultCountryCallingCode: z.string().trim().regex(/^\+?[1-9]\d{0,2}$/).optional(),
     }),
     run: (snapshot, input) => updateChurchProfile(snapshot, input),
   }),
@@ -679,7 +762,8 @@ export const COMMANDS = {
       changes: z.object({
         enabled: z.boolean().optional(),
         dueInDays: z.number().int().min(0).max(90).optional(),
-        defaultAssigneeId: optionalId,
+        // `null` clears the assignee ("Nobody yet"); `undefined` keeps it.
+        defaultAssigneeId: id.nullable().optional(),
       }),
     }),
     run: (snapshot, input) => updateAutomationRule(snapshot, input.id, input.changes),
@@ -744,8 +828,15 @@ export const COMMANDS = {
   "settings.setTeamMemberActive": define({
     capability: "settings.write",
     schema: z.object({ teamMemberId: id, active: z.boolean() }),
-    run: (snapshot, input) =>
-      setTeamMemberActive(snapshot, input.teamMemberId, input.active),
+    run: (snapshot, input, ctx) =>
+      setTeamMemberActive(snapshot, input.teamMemberId, input.active, ctx),
+  }),
+
+  "settings.reassignOpenTasks": define({
+    // Offered from Settings → Team, next to switching someone off.
+    capability: "settings.write",
+    schema: z.object({ fromTeamMemberId: id, toTeamMemberId: id }),
+    run: reassignOpenTasks,
   }),
 } as const;
 

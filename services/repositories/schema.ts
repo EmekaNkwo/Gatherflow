@@ -65,6 +65,7 @@ const visitorProfileSchema = z.object({
   lastContactAt: isoDateTime.optional(),
   contactAttempts: z.number().int().min(0),
   membershipInterestAt: isoDateTime.optional(),
+  returningVisitor: z.boolean().optional(),
   closure: z
     .object({
       reason: z.enum([
@@ -374,6 +375,7 @@ export const churchSettingsSchema: z.ZodType<ChurchSettings> = z.object({
     maxContactAttempts: z.number().int().min(1).max(10),
   }),
   defaultFollowUpDueInDays: z.number().int().min(0).max(90),
+  defaultCountryCallingCode: z.string().regex(/^[1-9]\d{0,2}$/).optional(),
 });
 
 /** Per-collection schemas, used by the snapshot repository. */

@@ -1,15 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { CheckIcon, UserPlusIcon } from "lucide-react";
+import { CheckIcon, PlusIcon, UserPlusIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { SelectField } from "@/components/shared/select-field";
 import { LinkButton } from "@/components/shared/link-button";
 import { EmptyState } from "@/components/shared/empty-state";
 import { PageShell, Section } from "@/components/shared/page-header";
 import { MessageComposer } from "@/components/communications/message-composer";
 import { CompleteTaskDialog } from "@/components/follow-ups/complete-task-dialog";
+import { CreateTaskDialog } from "@/components/follow-ups/create-task-dialog";
 import { RescheduleDialog } from "@/components/follow-ups/reschedule-dialog";
 import { TaskList } from "@/components/follow-ups/task-list";
 import { plainStageName } from "@/components/follow-ups/pipeline-board";
@@ -31,13 +32,17 @@ import { CLOSURE_REASON_LABELS, VISITOR_SOURCE_LABELS } from "@/types/person";
 import type { TaskWithPerson } from "@/services/follow-ups/selectors";
 import type { TaskOutcome } from "@/types/follow-up";
 import { useRole } from "@/hooks/useRole";
-import { useFollowUps, usePersonTasks } from "@/hooks/useFollowUps";
+import { useFollowUps, usePersonTasks, useTaskActionGate } from "@/hooks/useFollowUps";
 import { useMemberJourney } from "@/hooks/useMemberJourney";
 import { useMembers, usePerson } from "@/hooks/useMembers";
 import { useNow } from "@/hooks/use-now";
 import { usePersonAttendance } from "@/hooks/useAttendance";
 import { usePersonCommunications } from "@/hooks/useCommunications";
-import { useVisitor, useVisitors } from "@/hooks/useVisitors";
+import { useVisitor, useVisitorActionGate, useVisitors } from "@/hooks/useVisitors";
+import { useSnapshot } from "@/hooks/use-church-data";
+
+/** Refusals meaning the task changed elsewhere; the church is re-read, so close. */
+const STALE_CODES = new Set(["closed", "not_found"]);
 
 /**
  * A visitor, at a glance: who they are and how to reach them, what is
@@ -57,16 +62,26 @@ export default function VisitorProfilePage() {
   const attendance = usePersonAttendance(personId);
   const communications = usePersonCommunications(personId);
 
-  const { assignableTeam, can } = useRole();
-  const { assign, stopFollowUp, updateContactPreferences, expressMembershipInterest } = useVisitors();
-  const { complete, reschedule } = useFollowUps();
+  const snapshot = useSnapshot();
+  const { assignableTeam, can, canRun, teamMemberId } = useRole();
+  const allows = useVisitorActionGate();
+  const allowsTask = useTaskActionGate();
+  const { assign, stopFollowUp, reopenFollowUp, updateContactPreferences, expressMembershipInterest } = useVisitors();
+  const { complete, reschedule, create, scope } = useFollowUps();
   const { register: registerMember } = useMembers();
+  const [planning, setPlanning] = useState(false);
 
   const [composing, setComposing] = useState(false);
   const [closing, setClosing] = useState(false);
   const [preferences, setPreferences] = useState(false);
   const [completing, setCompleting] = useState<TaskWithPerson | null>(null);
   const [rescheduling, setRescheduling] = useState<TaskWithPerson | null>(null);
+
+  // A member who never had a visitor record belongs on the member page.
+  const memberOnly = Boolean(person?.member && !person.visitor);
+  useEffect(() => {
+    if (memberOnly) router.replace(`/members/${personId}`);
+  }, [memberOnly, personId, router]);
 
   if (!person) {
     return (
@@ -85,21 +100,49 @@ export default function VisitorProfilePage() {
   }
 
   const visitor = person.visitor;
-  const canEdit = can("visitors.write") || can("people.write");
+  const own = scope === "own";
+  // Each control is gated by the command it dispatches, so nothing offered
+  // here is refused by the server.
+  const canPreferences = allows("preferences", person);
+  const canAssign = allows("assign", person);
+  const canPlan =
+    Boolean(visitor) &&
+    !person.contact.optedOut &&
+    canRun("task.create", {
+      personId: person.id,
+      type: "say_hello",
+      assigneeId: own ? (teamMemberId ?? undefined) : undefined,
+    });
+  const canMakeMember =
+    !person.member && canRun("member.register", { personId: person.id, membershipDate: toIsoDate(now) });
+  const canNoteInterest = allows("membership", person);
   const name = displayName(person);
   const firstName = name.split(" ")[0];
   const open = tasks.filter((entry) => entry.task.status !== "completed" && entry.task.status !== "cancelled");
   const finished = tasks.filter((entry) => entry.task.status === "completed" || entry.task.status === "cancelled");
   const visits = row?.visits ?? 0;
 
-  const menu: PersonMenuItem[] = canEdit
-    ? [
-        { label: "How they like to be contacted", onSelect: () => setPreferences(true) },
-        ...(!visitor?.closure
-          ? [{ label: "Stop following up", onSelect: () => setClosing(true), destructive: true }]
-          : []),
-      ]
-    : [];
+  const menu: PersonMenuItem[] = [
+    ...(canPreferences ? [{ label: "How they like to be contacted", onSelect: () => setPreferences(true) }] : []),
+    ...(allows("reopen", person)
+      ? [{ label: "Reopen follow-up", onSelect: () => void reopenFollowUp(person.id) }]
+      : []),
+    ...(allows("stop", person)
+      ? [{ label: "Stop following up", onSelect: () => setClosing(true), destructive: true }]
+      : []),
+  ];
+
+  // A volunteer only sees their own follow-ups, so "nothing waiting" would
+  // be untrue when somebody else is looking after this person.
+  const keeper = visitor?.assignedTo && visitor.assignedTo !== teamMemberId ? row?.assigneeName : undefined;
+  const emptyMessage =
+    person.contact.optedOut || visitor?.closure
+      ? "Follow-up has stopped for them, so nothing new will be set up."
+      : own && keeper
+        ? `${keeper} is looking after ${firstName}, so their follow-ups aren't on your list.`
+        : own
+          ? `Nothing is waiting for you with ${firstName} right now.`
+          : `Nothing is waiting for ${firstName} right now.`;
 
   return (
     <PageShell className="max-w-4xl space-y-10">
@@ -135,44 +178,54 @@ export default function VisitorProfilePage() {
           </>
         }
         onMessage={
-          can("communications.write") && !person.contact.optedOut ? () => setComposing(true) : undefined
+          can("communications.write") && canRun("communication.log", {
+            personId: person.id,
+            channel: person.contact.preferredMethod,
+            status: "drafted",
+            body: "",
+          }) && !person.contact.optedOut
+            ? () => setComposing(true)
+            : undefined
         }
         menu={menu}
       />
 
-      <Section title={open.length ? "Waiting for them" : "Nothing waiting"}>
+      <Section
+        title={open.length ? (own ? "Waiting for you" : "Waiting for them") : "Nothing waiting"}
+        actions={
+          canPlan ? (
+            <Button variant="outline" className="min-h-11 gap-1.5 rounded-full" onClick={() => setPlanning(true)}>
+              <PlusIcon />
+              Plan a follow-up
+            </Button>
+          ) : undefined
+        }
+      >
         <TaskList
           tasks={open}
           now={now}
-          emptyMessage={
-            person.contact.optedOut || visitor?.closure
-              ? "Follow-up has stopped for them, so nothing new will be set up."
-              : `Nothing is waiting for ${firstName} right now.`
-          }
-          onComplete={can("tasks.write") ? (task) => setCompleting(task) : undefined}
-          onReschedule={can("tasks.write") ? (task) => setRescheduling(task) : undefined}
+          emptyMessage={emptyMessage}
+          allows={allowsTask}
+          onComplete={(task) => setCompleting(task)}
+          onReschedule={(task) => setRescheduling(task)}
         />
       </Section>
 
-      {canEdit ? (
+      {canAssign ? (
         <Section title="Who's looking after them">
           <div className="space-y-3 rounded-3xl border bg-card p-5">
             <label htmlFor="visitor-assignee" className="sr-only">
               Who&apos;s looking after {firstName}
             </label>
-            <NativeSelect
+            <SelectField
               id="visitor-assignee"
-              className="w-full"
               value={visitor?.assignedTo ?? ""}
-              onChange={(event) => assign(person.id, event.target.value || undefined)}
-            >
-              <NativeSelectOption value="">Nobody yet</NativeSelectOption>
-              {assignableTeam.map((member) => (
-                <NativeSelectOption key={member.id} value={member.id}>
-                  {member.name}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
+              onValueChange={(value) => assign(person.id, value || undefined)}
+              options={[
+                { value: "", label: "Nobody yet" },
+                ...assignableTeam.map((member) => ({ value: member.id, label: member.name })),
+              ]}
+            />
             <p className="text-sm text-muted-foreground">Anything still waiting for them goes to this person too.</p>
             {visitor?.notes ? (
               <p className="rounded-2xl bg-muted px-4 py-3 text-sm">{visitor.notes}</p>
@@ -186,30 +239,34 @@ export default function VisitorProfilePage() {
       <Section title="Their journey">
         <div className="space-y-5 rounded-3xl border bg-card p-5">
           <JourneyTimeline milestones={journey.milestones} />
-          {canEdit && !person.member ? (
+          {!person.member && (canMakeMember || canNoteInterest) ? (
             <div className="flex flex-wrap gap-2 border-t pt-4">
-              <Button
-                variant="outline"
-                size="lg"
-                className="rounded-full"
-                onClick={async () => {
-                  const outcome = await registerMember({ personId: person.id, membershipDate: toIsoDate(now) });
-                  if (outcome.ok) router.push(`/members/${person.id}`);
-                }}
-              >
-                <UserPlusIcon />
-                Make them a member
-              </Button>
-              <Button
-                variant="ghost"
-                size="lg"
-                className="rounded-full"
-                onClick={() => expressMembershipInterest(person.id)}
-                disabled={Boolean(visitor?.membershipInterestAt)}
-              >
-                {visitor?.membershipInterestAt ? <CheckIcon /> : null}
-                {visitor?.membershipInterestAt ? "Interest in membership noted" : "They'd like to become a member"}
-              </Button>
+              {canMakeMember ? (
+                <Button
+                  variant="outline"
+                  size="lg"
+                  className="rounded-full"
+                  onClick={async () => {
+                    const outcome = await registerMember({ personId: person.id, membershipDate: toIsoDate(now) });
+                    if (outcome.ok) router.push(`/members/${person.id}`);
+                  }}
+                >
+                  <UserPlusIcon />
+                  Make them a member
+                </Button>
+              ) : null}
+              {canNoteInterest ? (
+                <Button
+                  variant="ghost"
+                  size="lg"
+                  className="rounded-full"
+                  onClick={() => expressMembershipInterest(person.id)}
+                  disabled={Boolean(visitor?.membershipInterestAt)}
+                >
+                  {visitor?.membershipInterestAt ? <CheckIcon /> : null}
+                  {visitor?.membershipInterestAt ? "Interest in membership noted" : "They'd like to become a member"}
+                </Button>
+              ) : null}
             </div>
           ) : null}
           {person.member ? (
@@ -249,7 +306,7 @@ export default function VisitorProfilePage() {
               { label: "Interests", value: person.interests.length ? person.interests.join(", ") : undefined },
             ]}
           />
-          {canEdit ? (
+          {canPreferences ? (
             <Button variant="outline" size="lg" className="mt-4 rounded-full" onClick={() => setPreferences(true)}>
               Change how they like to be contacted
             </Button>
@@ -286,9 +343,27 @@ export default function VisitorProfilePage() {
       <CompleteTaskDialog
         task={completing}
         onOpenChange={(open) => !open && setCompleting(null)}
-        onConfirm={(outcome: TaskOutcome, note?: string) => {
-          if (completing) complete(completing.task.id, outcome, note);
-          setCompleting(null);
+        onConfirm={async (outcome: TaskOutcome, note?: string) => {
+          if (!completing) return;
+          // Stays open on a refusal so the answer isn't lost, unless the task
+          // changed elsewhere; the page then shows it as it now is.
+          const result = await complete(completing.task.id, outcome, note);
+          if (result.ok || STALE_CODES.has(result.code ?? "")) setCompleting(null);
+        }}
+      />
+      <CreateTaskDialog
+        open={planning}
+        onOpenChange={setPlanning}
+        people={snapshot.people}
+        team={assignableTeam}
+        today={toIsoDate(now)}
+        defaultDueInDays={snapshot.settings.defaultFollowUpDueInDays}
+        personId={person.id}
+        currentMemberId={teamMemberId ?? undefined}
+        ownOnly={own}
+        onConfirm={async (values) => {
+          const outcome = await create(values);
+          if (outcome.ok) setPlanning(false);
         }}
       />
       <RescheduleDialog

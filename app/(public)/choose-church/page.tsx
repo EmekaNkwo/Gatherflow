@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRightIcon } from "lucide-react";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { AuthShell } from "@/components/auth/auth-shell";
 import { DEMO_ROLE_LABELS, type DemoRole } from "@/types/team";
@@ -22,7 +22,8 @@ interface ChurchChoice {
 export default function ChooseChurchPage() {
   const router = useRouter();
   const [churches, setChurches] = useState<ChurchChoice[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // The page's state after a failed load; the message itself is a toast.
+  const [loadFailed, setLoadFailed] = useState(false);
   const [choosing, setChoosing] = useState<string | null>(null);
 
   useEffect(() => {
@@ -40,12 +41,18 @@ export default function ChooseChurchPage() {
             router.replace("/sign-in");
             return;
           }
-          setError(envelope.error ?? "Could not load your churches.");
+          setLoadFailed(true);
+          toast.error("Could not load your churches", { description: envelope.error });
           return;
         }
         setChurches(envelope.data.churches);
       })
-      .catch(() => setError("Could not reach the server."));
+      .catch(() => {
+        // Leaving the page cancels the request; that is not a failure to report.
+        if (controller.signal.aborted) return;
+        setLoadFailed(true);
+        toast.error("Could not reach the server", { description: "Check your connection and try again." });
+      });
     return () => controller.abort();
   }, [router]);
 
@@ -57,7 +64,7 @@ export default function ChooseChurchPage() {
       body: JSON.stringify({ churchId }),
     });
     if (!response.ok) {
-      setError("That church could not be opened.");
+      toast.error("That church could not be opened", { description: "Try again in a moment." });
       setChoosing(null);
       return;
     }
@@ -71,16 +78,12 @@ export default function ChooseChurchPage() {
       title="Which church?"
       description="Your account belongs to more than one church. Choose the one to open; you can switch at any time."
     >
-      {error ? (
-        <Alert variant="destructive" className="mb-4">
-          <AlertTitle>Something went wrong</AlertTitle>
-          <AlertDescription>
-            <span className="block">{error}</span>
-            <span className="block">Refresh the page to try again.</span>
-          </AlertDescription>
-        </Alert>
+      {loadFailed ? (
+        <Button variant="outline" size="lg" className="w-full rounded-full" onClick={() => window.location.reload()}>
+          Try again
+        </Button>
       ) : null}
-      {churches === null && !error ? (
+      {churches === null && !loadFailed ? (
         <p role="status" className="text-base text-muted-foreground">
           Finding your churches…
         </p>

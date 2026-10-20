@@ -45,5 +45,11 @@ export async function sendInvitationEmail(
   send: (email: SystemEmail) => Promise<Result<void>> = sendSystemEmail,
 ): Promise<InvitationDelivery> {
   const sent = await send(composeInvitationEmail(input));
-  return sent.ok ? { emailed: true } : { emailed: false, reason: sent.error };
+  if (sent.ok) return { emailed: true };
+  // Written for the administrator reading it, who is the one who would pass
+  // the link on, not "ask your administrator".
+  if (sent.code === "not_configured") {
+    return { emailed: false, skipped: true, reason: "Email isn't set up here yet, so the invitation wasn't emailed." };
+  }
+  return { emailed: false, reason: sent.error };
 }

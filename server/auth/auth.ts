@@ -121,6 +121,10 @@ ${url}
     // seconds per address is generous for a person and hopeless for a script;
     // the test suite raises it because it signs in dozens of times a minute.
     rateLimit: {
+      // On in every environment (Better Auth's default is production only),
+      // so the limits can be seen and tested locally too. Set
+      // AUTH_RATE_LIMIT_ENABLED=false to switch them off.
+      enabled: process.env.AUTH_RATE_LIMIT_ENABLED !== "false",
       // Counted in Postgres, so a deployment running several instances has
       // one budget per address rather than one per instance.
       customStorage: {
@@ -134,7 +138,16 @@ ${url}
     },
     // Required so sign-in from a Server Action can set its cookie.
     plugins: [nextCookies()],
+    // In development, the same machine reached as 127.0.0.1 rather than
+    // localhost is the same origin to a person, but not to the browser.
+    trustedOrigins: developmentAliases(),
   });
+}
+
+function developmentAliases(): string[] {
+  const base = process.env.BETTER_AUTH_URL;
+  if (process.env.NODE_ENV !== "development" || !base?.includes("://localhost")) return [];
+  return [base.replace("://localhost", "://127.0.0.1")];
 }
 
 function signInBudget(): number {

@@ -45,10 +45,14 @@ export type Capability =
   | "tasks.write"
   | "tasks.assign"
   | "attendance.write"
+  /** Adding, changing and removing services — check-in is `attendance.write`. */
+  | "sessions.manage"
   | "groups.write"
   | "care.read"
   | "care.write"
   | "communications.write"
+  /** Creating, editing and deleting the church-wide message templates. */
+  | "templates.manage"
   | "analytics.read"
   | "settings.write"
   | "exports.run";

@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { type BaseSyntheticEvent, useRef, useState } from "react";
 import Link from "next/link";
-import { useForm, useWatch } from "react-hook-form";
+import { Controller, useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { CheckCircle2Icon, ChevronDownIcon } from "lucide-react";
 import { cn } from "cn";
@@ -16,18 +16,30 @@ import {
   FieldLabel,
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { SelectField } from "@/components/shared/select-field";
 import { toIsoDate } from "@/lib/dates";
 import { CONTACT_METHODS, CONTACT_METHOD_LABELS } from "@/types/common";
 import { VISITOR_SOURCES, VISITOR_SOURCE_LABELS } from "@/types/person";
 import {
   quickRegistrationSchema,
+  VISITOR_FIELD_LIMITS,
   type QuickRegistrationValues,
 } from "@/services/visitors/schema";
+import { useSnapshot } from "@/hooks/use-church-data";
 import { useRole } from "@/hooks/useRole";
 import { useNow } from "@/hooks/use-now";
 import { useVisitors } from "@/hooks/useVisitors";
 import { DuplicateSuggestions } from "./duplicate-suggestions";
+
+const VISITOR_SOURCE_OPTIONS = VISITOR_SOURCES.map((source) => ({
+  value: source,
+  label: VISITOR_SOURCE_LABELS[source],
+}));
+
+const CONTACT_METHOD_OPTIONS = CONTACT_METHODS.map((method) => ({
+  value: method,
+  label: CONTACT_METHOD_LABELS[method],
+}));
 
 interface Registered {
   id: string;
@@ -42,10 +54,20 @@ interface Registered {
  */
 export function QuickRegisterForm({ sessionId }: { sessionId?: string }) {
   const now = useNow();
-  const { assignableTeam } = useRole();
+  const { assignableTeam, can, currentMember } = useRole();
+  const sessions = useSnapshot().sessions;
   const { register: registerVisitor, findDuplicates } = useVisitors();
   const [registered, setRegistered] = useState<Registered[]>([]);
   const [details, setDetails] = useState(false);
+  // A synchronous lock: a double tap or two quick Enters arrive before any
+  // re-render, so a state flag alone would let both through.
+  const saving = useRef(false);
+  const [busy, setBusy] = useState(false);
+
+  // Somebody who can't hand out follow-ups may only take one on themselves.
+  const helpers = can("tasks.assign")
+    ? assignableTeam
+    : assignableTeam.filter((member) => member.id === currentMember?.id);
 
   const form = useForm<QuickRegistrationValues>({
     resolver: zodResolver(quickRegistrationSchema),
@@ -71,12 +93,14 @@ export function QuickRegisterForm({ sessionId }: { sessionId?: string }) {
       ? findDuplicates({ firstName, lastName, phone })
       : [];
 
-  const onSubmit = form.handleSubmit(async (values) => {
+  const save = form.handleSubmit(async (values) => {
+    // The service decides the date of the visit; today only without one.
+    const sessionDate = sessionId ? sessions.find((entry) => entry.id === sessionId)?.date : undefined;
     const outcome = await registerVisitor({
       firstName: values.firstName,
       lastName: values.lastName,
       phone: values.phone || undefined,
-      visitDate: toIsoDate(now),
+      visitDate: sessionDate ?? toIsoDate(now),
       sessionId,
       source: values.source,
       assignedTo: values.assignedTo || undefined,
@@ -108,6 +132,19 @@ export function QuickRegisterForm({ sessionId }: { sessionId?: string }) {
     form.setFocus("firstName");
   });
 
+  const onSubmit = async (event?: BaseSyntheticEvent) => {
+    event?.preventDefault();
+    if (saving.current) return;
+    saving.current = true;
+    setBusy(true);
+    try {
+      await save();
+    } finally {
+      saving.current = false;
+      setBusy(false);
+    }
+  };
+
   const errors = form.formState.errors;
 
   return (
@@ -128,17 +165,17 @@ export function QuickRegisterForm({ sessionId }: { sessionId?: string }) {
         <FieldGroup className="gap-4 sm:grid sm:grid-cols-2">
           <Field>
             <FieldLabel htmlFor="quick-firstName">First name</FieldLabel>
-            <Input id="quick-firstName" className="h-12 text-base" autoFocus autoComplete="off" {...form.register("firstName")} />
+            <Input id="quick-firstName" className="h-12 text-base" autoFocus autoComplete="off" maxLength={VISITOR_FIELD_LIMITS.name} {...form.register("firstName")} />
             <FieldError errors={[errors.firstName]} />
           </Field>
           <Field>
             <FieldLabel htmlFor="quick-lastName">Last name</FieldLabel>
-            <Input id="quick-lastName" className="h-12 text-base" autoComplete="off" {...form.register("lastName")} />
+            <Input id="quick-lastName" className="h-12 text-base" autoComplete="off" maxLength={VISITOR_FIELD_LIMITS.name} {...form.register("lastName")} />
             <FieldError errors={[errors.lastName]} />
           </Field>
           <Field className="sm:col-span-2">
             <FieldLabel htmlFor="quick-phone">Phone number</FieldLabel>
-            <Input id="quick-phone" className="h-12 text-base" inputMode="tel" autoComplete="off" {...form.register("phone")} />
+            <Input id="quick-phone" className="h-12 text-base" inputMode="tel" autoComplete="off" maxLength={VISITOR_FIELD_LIMITS.phone} {...form.register("phone")} />
             <FieldDescription>Optional, but it&apos;s how somebody can say hello this week.</FieldDescription>
             <FieldError errors={[errors.phone]} />
           </Field>
@@ -172,43 +209,66 @@ export function QuickRegisterForm({ sessionId }: { sessionId?: string }) {
           </button>
           {details ? (
             <FieldGroup className="mt-2 gap-4 sm:grid sm:grid-cols-3">
-              <Field>
-                <FieldLabel htmlFor="quick-source">How they found us</FieldLabel>
-                <NativeSelect className="w-full" id="quick-source" {...form.register("source")}>
-                  {VISITOR_SOURCES.map((source) => (
-                    <NativeSelectOption key={source} value={source}>
-                      {VISITOR_SOURCE_LABELS[source]}
-                    </NativeSelectOption>
-                  ))}
-                </NativeSelect>
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="quick-method">Best way to reach them</FieldLabel>
-                <NativeSelect className="w-full" id="quick-method" {...form.register("preferredMethod")}>
-                  {CONTACT_METHODS.map((method) => (
-                    <NativeSelectOption key={method} value={method}>
-                      {CONTACT_METHOD_LABELS[method]}
-                    </NativeSelectOption>
-                  ))}
-                </NativeSelect>
-              </Field>
-              <Field>
-                <FieldLabel htmlFor="quick-assignee">Who will say hello</FieldLabel>
-                <NativeSelect className="w-full" id="quick-assignee" {...form.register("assignedTo")}>
-                  <NativeSelectOption value="">Let the coordinator decide</NativeSelectOption>
-                  {assignableTeam.map((member) => (
-                    <NativeSelectOption key={member.id} value={member.id}>
-                      {member.name}
-                    </NativeSelectOption>
-                  ))}
-                </NativeSelect>
-              </Field>
+              <Controller
+                control={form.control}
+                name="source"
+                render={({ field, fieldState }) => (
+                  <SelectField
+                    id="quick-source"
+                    label="How they found us"
+                    value={field.value ?? ""}
+                    onValueChange={field.onChange}
+                    error={fieldState.error?.message}
+                    options={VISITOR_SOURCE_OPTIONS}
+                  />
+                )}
+              />
+              <Controller
+                control={form.control}
+                name="preferredMethod"
+                render={({ field, fieldState }) => (
+                  <SelectField
+                    id="quick-method"
+                    label="Best way to reach them"
+                    value={field.value ?? ""}
+                    onValueChange={field.onChange}
+                    error={fieldState.error?.message}
+                    options={CONTACT_METHOD_OPTIONS}
+                  />
+                )}
+              />
+              <Controller
+                control={form.control}
+                name="assignedTo"
+                render={({ field, fieldState }) => (
+                  <SelectField
+                    id="quick-assignee"
+                    label="Who will say hello"
+                    value={field.value ?? ""}
+                    onValueChange={field.onChange}
+                    error={fieldState.error?.message}
+                    options={[
+                      { value: "", label: "Let the coordinator decide" },
+                      ...helpers.map((member) => ({
+                        value: member.id,
+                        label: member.id === currentMember?.id ? `Me (${member.name})` : member.name,
+                      })),
+                    ]}
+                  />
+                )}
+              />
             </FieldGroup>
           ) : null}
         </div>
 
-        <Button type="submit" size="lg" className="h-12 w-full rounded-full text-base sm:w-auto sm:px-8">
-          Add {firstName.trim() || "them"}
+        <Button
+          type="submit"
+          size="lg"
+          disabled={busy}
+          aria-busy={busy}
+          className="h-12 w-full rounded-full text-base sm:w-auto sm:px-8"
+        >
+          {busy ? "Adding…" : `Add ${firstName.trim() || "them"}`}
         </Button>
       </form>
 

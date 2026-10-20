@@ -1,5 +1,6 @@
 import { average } from "@/lib/metrics";
-import { formatWeekLabel, recentWeekStarts, toIsoDate, weekStart } from "@/lib/dates";
+import { addDaysIso, formatWeekLabel, recentWeekStarts, toIsoDate, weekStart } from "@/lib/dates";
+import { firstVisitRecordIds, wasMemberOn } from "../attendance/visits";
 import type { IsoDate, PersonId, SessionId } from "@/types/common";
 import type {
   AttendanceRecord,
@@ -19,7 +20,15 @@ import type { ChurchSnapshot } from "@/types/snapshot";
  * People are classified by what they were on the day of the session: a
  * member counts as a member from their membership date, and as a visitor
  * at anything they attended before it.
+ *
+ * Weekly figures count **people**, not check-ins: somebody at both the
+ * midweek and the Sunday service is one person that week. And only
+ * **completed** weeks (Monday to Sunday, all in the past) go into a weekly
+ * figure, so the average does not lurch with every tap during this week's
+ * check-in. This week so far is reported on its own.
  */
+
+export { wasMemberOn };
 
 export interface SessionSummary {
   session: AttendanceSession;
@@ -27,11 +36,6 @@ export interface SessionSummary {
   members: number;
   visitors: number;
   firstTimeVisitors: number;
-}
-
-/** Whether a person was a member on a given day. */
-export function wasMemberOn(person: Person | undefined, date: IsoDate): boolean {
-  return person?.kind === "member" && person.member !== undefined && person.member.membershipDate <= date;
 }
 
 function presentRows(snapshot: ChurchSnapshot): AttendanceRecord[] {
@@ -44,16 +48,21 @@ export function sessionSummary(
 ): SessionSummary | undefined {
   const session = snapshot.sessions.find((entry) => entry.id === sessionId);
   if (!session) return undefined;
-  return summarise(snapshot, session);
+  return summarise(snapshot, session, firstVisitRecordIds(snapshot));
 }
 
 export function sessionSummaries(snapshot: ChurchSnapshot): SessionSummary[] {
+  const firsts = firstVisitRecordIds(snapshot);
   return [...snapshot.sessions]
     .sort((left, right) => (left.date < right.date ? 1 : -1))
-    .map((session) => summarise(snapshot, session));
+    .map((session) => summarise(snapshot, session, firsts));
 }
 
-function summarise(snapshot: ChurchSnapshot, session: AttendanceSession): SessionSummary {
+function summarise(
+  snapshot: ChurchSnapshot,
+  session: AttendanceSession,
+  firsts: ReadonlySet<string>,
+): SessionSummary {
   const peopleById = new Map(snapshot.people.map((person) => [person.id, person]));
   const rows = presentRows(snapshot).filter((row) => row.sessionId === session.id);
 
@@ -69,82 +78,128 @@ function summarise(snapshot: ChurchSnapshot, session: AttendanceSession): Sessio
     total: rows.length,
     members,
     visitors,
-    firstTimeVisitors: rows.filter((row) => row.firstVisit).length,
+    firstTimeVisitors: rows.filter((row) => firsts.has(row.id)).length,
   };
 }
 
-/** Weekly totals for the trend chart, oldest week first. */
+/**
+ * The Mondays of the last `count` completed weeks, oldest first. The
+ * current week is never included: it has not finished yet.
+ */
+export function completedWeekStarts(now: Date, count: number): IsoDate[] {
+  return recentWeekStarts(new Date(`${addDaysIso(weekStart(now), -7)}T12:00:00.000Z`), count);
+}
+
+interface WeekTally {
+  people: Set<PersonId>;
+  members: Set<PersonId>;
+  firstTime: number;
+}
+
+/** Distinct people per week, for the given weeks only. */
+function tallyWeeks(
+  snapshot: ChurchSnapshot,
+  weeks: readonly IsoDate[],
+  options: { serviceType?: ServiceType; until?: IsoDate } = {},
+): Map<IsoDate, WeekTally> {
+  const peopleById = new Map(snapshot.people.map((person) => [person.id, person]));
+  const sessionsById = new Map(snapshot.sessions.map((session) => [session.id, session]));
+  const firsts = firstVisitRecordIds(snapshot);
+  // A local tally, filled in place and returned.
+  const tallies = new Map<IsoDate, WeekTally>(
+    weeks.map((week) => [week, { people: new Set(), members: new Set(), firstTime: 0 }]),
+  );
+
+  for (const row of presentRows(snapshot)) {
+    const session = sessionsById.get(row.sessionId);
+    if (!session) continue;
+    if (options.serviceType && session.type !== options.serviceType) continue;
+    if (options.until && session.date > options.until) continue;
+
+    const tally = tallies.get(weekStart(session.date));
+    if (!tally) continue;
+
+    tally.people.add(row.personId);
+    if (wasMemberOn(peopleById.get(row.personId), session.date)) tally.members.add(row.personId);
+    if (firsts.has(row.id)) tally.firstTime += 1;
+  }
+  return tallies;
+}
+
+/**
+ * Weekly totals for the trend chart, oldest week first: the last `weeks`
+ * completed weeks. A week with no service shows as zero. Each total is the
+ * number of different people that week; somebody who became a member during
+ * the week counts as a member.
+ */
 export function attendanceTrend(
   snapshot: ChurchSnapshot,
   now: Date,
   weeks = 10,
   options: { serviceType?: ServiceType } = {},
 ): AttendanceTrendPoint[] {
-  const peopleById = new Map(snapshot.people.map((person) => [person.id, person]));
-  const sessionsById = new Map(snapshot.sessions.map((session) => [session.id, session]));
-  const buckets = new Map<IsoDate, AttendanceTrendPoint>();
+  const starts = completedWeekStarts(now, weeks);
+  const tallies = tallyWeeks(snapshot, starts, options);
 
-  for (const week of recentWeekStarts(now, weeks)) {
-    buckets.set(week, {
+  return starts.map((week) => {
+    const tally = tallies.get(week);
+    const total = tally?.people.size ?? 0;
+    const members = tally?.members.size ?? 0;
+    return {
       weekStart: week,
       label: formatWeekLabel(week),
-      total: 0,
-      members: 0,
-      visitors: 0,
-      firstTimeVisitors: 0,
-    });
-  }
+      total,
+      members,
+      visitors: total - members,
+      firstTimeVisitors: tally?.firstTime ?? 0,
+    };
+  });
+}
 
-  for (const row of presentRows(snapshot)) {
-    const session = sessionsById.get(row.sessionId);
-    if (!session) continue;
-    if (options.serviceType && session.type !== options.serviceType) continue;
-
-    const bucket = buckets.get(weekStart(session.date));
-    if (!bucket) continue;
-
-    const member = wasMemberOn(peopleById.get(row.personId), session.date);
-    buckets.set(bucket.weekStart, {
-      ...bucket,
-      total: bucket.total + 1,
-      members: bucket.members + (member ? 1 : 0),
-      visitors: bucket.visitors + (member ? 0 : 1),
-      firstTimeVisitors: bucket.firstTimeVisitors + (row.firstVisit ? 1 : 0),
-    });
-  }
-
-  const points = Array.from(buckets.values());
-
-  // Drop trailing weeks with nothing recorded: the current week is usually
-  // still ahead of its service, and a tail of zeroes reads as a collapse in
-  // attendance rather than "this has not happened yet".
-  let end = points.length;
-  while (end > 1 && points[end - 1].total === 0) end -= 1;
-  return points.slice(0, end);
+export interface WeeklyAverage {
+  /** Average number of different people a week. */
+  average: number;
+  /** Completed weeks in the window that had anybody recorded. */
+  weeksCounted: number;
+  /** Different people recorded so far this week (not part of the average). */
+  thisWeek: number;
 }
 
 /**
- * Average weekly attendance over the configured window. Weeks with no
- * recorded session are left out rather than counted as zero.
+ * Average weekly attendance over the configured window of completed weeks.
+ * Weeks with nobody recorded are left out rather than counted as zero.
  */
 export function averageWeeklyAttendance(
   snapshot: ChurchSnapshot,
   now: Date,
   weeks = snapshot.settings.engagement.attendanceAverageWeeks,
-): { average: number; weeksCounted: number } {
+): WeeklyAverage {
   const trend = attendanceTrend(snapshot, now, weeks).filter((point) => point.total > 0);
-  return { average: average(trend.map((point) => point.total)), weeksCounted: trend.length };
+  const current = weekStart(now);
+  const thisWeek = tallyWeeks(snapshot, [current], { until: toIsoDate(now) }).get(current);
+  return {
+    average: average(trend.map((point) => point.total)),
+    weeksCounted: trend.length,
+    thisWeek: thisWeek?.people.size ?? 0,
+  };
 }
 
-/** Attendance for one person, newest first, joined to the session. */
+/**
+ * Attendance for one person, newest first, joined to the session. The
+ * `firstVisit` flag is worked out from the dates, not read from storage.
+ */
 export function personAttendance(
   snapshot: ChurchSnapshot,
   personId: PersonId,
 ): Array<{ record: AttendanceRecord; session?: AttendanceSession }> {
   const sessionsById = new Map(snapshot.sessions.map((session) => [session.id, session]));
-  return snapshot.attendance
-    .filter((row) => row.personId === personId)
-    .map((record) => ({ record, session: sessionsById.get(record.sessionId) }))
+  const rows = snapshot.attendance.filter((row) => row.personId === personId);
+  const firsts = firstVisitRecordIds({ ...snapshot, attendance: rows });
+  return rows
+    .map((row) => ({
+      record: row.firstVisit === firsts.has(row.id) ? row : { ...row, firstVisit: firsts.has(row.id) },
+      session: sessionsById.get(row.sessionId),
+    }))
     .sort((left, right) => {
       const leftDate = left.session?.date ?? "";
       const rightDate = right.session?.date ?? "";
@@ -194,6 +249,7 @@ export function attendanceHabit(
 ): { label: string; detail: string } {
   const weeks = snapshot.settings.engagement.attendanceAverageWeeks;
   const since = weeksSinceLastAttendance(snapshot, person.id, now);
+  // Completed weeks only, the same weeks the person's own count covers.
   const recent = attendanceTrend(snapshot, now, weeks).filter((point) =>
     point.total > 0,
   ).length;
@@ -211,7 +267,7 @@ export function attendanceHabit(
   }
   return {
     label: `${attended} of the last ${recent} weeks`,
-    detail: `Counted from recorded attendance over the last ${weeks} weeks.`,
+    detail: `Counted from recorded attendance over the last ${weeks} completed weeks.`,
   };
 }
 
@@ -221,7 +277,7 @@ export function recentAttendanceCount(
   now: Date,
   weeks: number,
 ): number {
-  const windowWeeks = new Set(recentWeekStarts(now, weeks));
+  const windowWeeks = new Set(completedWeekStarts(now, weeks));
   const sessionsById = new Map(snapshot.sessions.map((session) => [session.id, session]));
 
   const attendedWeeks = new Set<IsoDate>();

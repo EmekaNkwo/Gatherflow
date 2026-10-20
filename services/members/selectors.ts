@@ -1,5 +1,5 @@
 import type { CsvColumn } from "@/lib/csv";
-import { normalise } from "@/lib/strings";
+import { matchesPersonQuery } from "@/lib/person-search";
 import { ratio } from "@/lib/metrics";
 import type { GroupId, IsoDate, Ratio } from "@/types/common";
 import { CONTACT_METHOD_LABELS } from "@/types/common";
@@ -10,6 +10,12 @@ import {
   recentAttendanceCount,
   weeksSinceLastAttendance,
 } from "../analytics/attendance";
+import {
+  activeGroupIds,
+  isCurrentMember,
+  isInActiveGroup,
+  isUnconnectedMember,
+} from "../groups/participation";
 
 export interface MemberRow {
   person: Person;
@@ -19,6 +25,10 @@ export interface MemberRow {
   membershipDate: IsoDate;
   householdName?: string;
   groupNames: string[];
+  /** Names of the groups they're in that aren't meeting at the moment. */
+  inactiveGroupNames: string[];
+  /** In at least one active group (see `groups/participation`). */
+  inActiveGroup: boolean;
   lastAttendance?: IsoDate;
   weeksSinceAttendance?: number;
   recentWeeks: number;
@@ -39,7 +49,7 @@ export type MemberFilter =
   | "needs_review";
 
 export const MEMBER_FILTER_LABELS: Record<MemberFilter, string> = {
-  all: "All members",
+  all: "Current members",
   active: "Active members",
   new: "New members",
   inactive: "Inactive members",
@@ -62,6 +72,7 @@ export interface MemberQuery {
 export function memberRows(snapshot: ChurchSnapshot, now: Date): MemberRow[] {
   const households = new Map(snapshot.households.map((entry) => [entry.id, entry]));
   const groups = new Map(snapshot.groups.map((group) => [group.id, group]));
+  const activeIds = activeGroupIds(snapshot);
   const threshold = snapshot.settings.engagement.inactiveAfterWeeksAbsent;
   const window = snapshot.settings.engagement.attendanceAverageWeeks;
 
@@ -83,6 +94,11 @@ export function memberRows(snapshot: ChurchSnapshot, now: Date): MemberRow[] {
         groupNames: person.groupIds
           .map((id) => groups.get(id)?.name)
           .filter((name): name is string => Boolean(name)),
+        inactiveGroupNames: person.groupIds
+          .map((id) => groups.get(id))
+          .filter((group) => group !== undefined && !group.active)
+          .map((group) => group!.name),
+        inActiveGroup: isInActiveGroup(person, activeIds),
         lastAttendance: lastAttendanceDate(snapshot, person.id),
         weeksSinceAttendance: weeksSince,
         recentWeeks: recentAttendanceCount(snapshot, person.id, now, window),
@@ -108,7 +124,7 @@ export function selectMembers(
   query: MemberQuery,
   now: Date,
 ): MemberRow[] {
-  const search = query.search ? normalise(query.search) : "";
+  const search = query.search?.trim() ?? "";
   const filter = query.filter ?? "all";
 
   return memberRows(snapshot, now).filter((row) => {
@@ -122,23 +138,13 @@ export function selectMembers(
     if (query.membershipFrom && row.membershipDate < query.membershipFrom) return false;
     if (query.membershipTo && row.membershipDate > query.membershipTo) return false;
 
-    if (search) {
-      const haystack = normalise(
-        [
-          row.person.firstName,
-          row.person.lastName,
-          row.person.preferredName ?? "",
-          row.reference,
-          row.person.phone ?? "",
-          row.person.email ?? "",
-        ].join(" "),
-      );
-      if (!haystack.includes(search)) return false;
-    }
+    if (search && !matchesPersonQuery(row.person, search)) return false;
 
     switch (filter) {
       case "all":
-        return row.status !== "archived";
+        // Current members only, matching the header count: transferred and
+        // archived people have their own views under "More…".
+        return isCurrentMember(row.person);
       case "active":
         return row.status === "active";
       case "new":
@@ -152,7 +158,7 @@ export function selectMembers(
       case "requested_contact":
         return Boolean(row.person.member?.requestedContact);
       case "no_group":
-        return row.groupNames.length === 0 && row.status !== "archived";
+        return isCurrentMember(row.person) && !row.inActiveGroup;
       case "needs_review":
         return Boolean(row.reviewReason);
       default:
@@ -179,20 +185,20 @@ export function membershipBreakdown(
   }));
 }
 
-/** Group participation: members in at least one active group. */
+/** Current members (see `groups/participation`), for header counts. */
+export function currentMemberCount(snapshot: ChurchSnapshot): number {
+  return snapshot.people.filter(isCurrentMember).length;
+}
+
+/**
+ * Group participation: current members in at least one active group. Uses
+ * the same predicate as the Members "Not in a group" view and the Groups page.
+ */
 export function groupParticipation(snapshot: ChurchSnapshot): Ratio {
-  const activeGroups = new Set(
-    snapshot.groups.filter((group) => group.active).map((group) => group.id),
-  );
-  const members = snapshot.people.filter(
-    (person) =>
-      person.member &&
-      !["archived", "transferred"].includes(person.member.status),
-  );
-  const connected = members.filter((person) =>
-    person.groupIds.some((id) => activeGroups.has(id)),
-  );
-  return ratio(connected.length, members.length);
+  const activeIds = activeGroupIds(snapshot);
+  const members = snapshot.people.filter(isCurrentMember);
+  const unconnected = members.filter((person) => isUnconnectedMember(person, activeIds));
+  return ratio(members.length - unconnected.length, members.length);
 }
 
 /** Member export columns. Emergency contacts are never exported. */

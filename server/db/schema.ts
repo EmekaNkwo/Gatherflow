@@ -534,3 +534,33 @@ export type CollectionTableName = keyof typeof collectionTables;
 // auth-schema.ts. Re-exported here so one import gives the adapter and the
 // migration tooling the whole schema.
 export { account, session, user, verification } from "./auth-schema";
+
+/**
+ * One row per command request that carried a request id.
+ *
+ * A phone on a weak signal may send the same request twice: the first reached
+ * the server and was saved, but the answer never made it back, so the browser
+ * tries again. The request id is generated once per intent in the browser and
+ * reused for every retry, and this table is what turns the second arrival into
+ * "already done" instead of a second visitor or a second follow-up.
+ *
+ * A row is claimed (`pending`) before the command runs and marked `done` with
+ * the notices and payload it produced; a command that is refused releases its
+ * claim, so a retry can try again. Rows are pruned after a day.
+ */
+export const commandReceipts = pgTable(
+  "command_receipts",
+  {
+    churchId: churchId(),
+    requestId: text("request_id").notNull(),
+    userId: text("user_id").notNull(),
+    command: text("command").notNull(),
+    status: text("status").$type<"pending" | "done">().notNull(),
+    response: jsonb("response").$type<{ notices: string[]; data: Record<string, unknown> }>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.churchId, t.requestId] }),
+    index("command_receipts_created_idx").on(t.createdAt),
+  ],
+);

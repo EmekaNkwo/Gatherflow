@@ -1,13 +1,22 @@
 "use client";
 
+import { showFormError } from "@/lib/form-toast";
 import { Suspense, useEffect, useState, type FormEvent } from "react";
 import { useSearchParams } from "next/navigation";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { AUTH_INPUT, AUTH_PRIMARY, AuthLink, AuthShell } from "@/components/auth/auth-shell";
 import { authClient } from "@/lib/auth-client";
+import {
+  DEFAULT_RETRY_SECONDS,
+  notifyRateLimited,
+  rateLimitedMessage,
+  retryAfterCapture,
+  retryAfterSeconds,
+  tryAgainIn,
+} from "@/lib/rate-limit";
+import { useCooldown } from "@/hooks/useCooldown";
 import { DEMO_ROLE_LABELS, type DemoRole } from "@/types/team";
 
 interface Invitation {
@@ -25,6 +34,11 @@ interface Invitation {
  * The server checks that the account's address matches the invitation's;
  * the page merely makes that the easy path.
  */
+/** What went wrong, as a toast: the server"s words, then what to do next. */
+function showError(message: string): void {
+  showFormError("Not joined yet", message);
+}
+
 export default function AcceptInvitePage() {
   return (
     <Suspense>
@@ -41,13 +55,29 @@ function AcceptInvite() {
   const [mode, setMode] = useState<"checking" | "sign-up" | "sign-in" | "accepting" | "done">("checking");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  // Too many lookups from this connection: the invitation may be fine, so
+  // this is a wait, not a problem with the link.
+  const [lookupWait, setLookupWait] = useState<number | null>(null);
+  const cooldown = useCooldown();
+
+  function waitBeforeRetrying(seconds: number) {
+    cooldown.start(seconds);
+    notifyRateLimited(seconds);
+  }
 
   useEffect(() => {
     const controller = new AbortController();
     void fetch(`/api/invitations/${encodeURIComponent(token)}`, { signal: controller.signal })
       .then(async (response) => {
         const envelope = (await response.json()) as { ok: boolean; data?: Invitation; error?: string };
+        // A cancelled lookup must not show a problem or accept a second time.
+        if (controller.signal.aborted) return;
+        if (response.status === 429) {
+          const seconds = retryAfterSeconds(response.headers);
+          setLookupWait(seconds);
+          waitBeforeRetrying(seconds);
+          return;
+        }
         if (!envelope.ok || !envelope.data) {
           setProblem(envelope.error ?? "That invitation is not valid.");
           return;
@@ -62,7 +92,12 @@ function AcceptInvite() {
           setMode("sign-up");
         }
       })
-      .catch(() => setProblem("Could not reach the server."));
+      .catch(() => {
+        // Leaving the page (or React mounting it twice in development)
+        // cancels the request; that is not a failure to report.
+        if (controller.signal.aborted) return;
+        setProblem("Could not reach the server.");
+      });
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
@@ -70,8 +105,13 @@ function AcceptInvite() {
   async function accept() {
     const response = await fetch(`/api/invitations/${encodeURIComponent(token)}/accept`, { method: "POST" });
     const envelope = (await response.json()) as { ok: boolean; error?: string; code?: string };
+    if (response.status === 429) {
+      waitBeforeRetrying(retryAfterSeconds(response.headers));
+      setMode("sign-in");
+      return;
+    }
     if (!envelope.ok) {
-      setError(envelope.error ?? "The invitation could not be accepted.");
+      showError(envelope.error ?? "The invitation could not be accepted.");
       setMode(envelope.code === "wrong_account" ? "sign-in" : "sign-up");
       return;
     }
@@ -83,11 +123,21 @@ function AcceptInvite() {
   async function onSignUp(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!invitation) return;
-    setError(null);
     setMode("accepting");
-    const signedUp = await authClient.signUp.email({ name, email: invitation.email, password });
+    const retry = retryAfterCapture();
+    const signedUp = await authClient.signUp.email({
+      name,
+      email: invitation.email,
+      password,
+      fetchOptions: retry.fetchOptions,
+    });
+    if (signedUp.error?.status === 429) {
+      waitBeforeRetrying(retry.seconds() ?? DEFAULT_RETRY_SECONDS);
+      setMode("sign-up");
+      return;
+    }
     if (signedUp.error) {
-      setError(signedUp.error.message ?? "The account could not be created.");
+      showError(signedUp.error.message ?? "The account could not be created.");
       setMode("sign-up");
       return;
     }
@@ -97,15 +147,39 @@ function AcceptInvite() {
   async function onSignIn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!invitation) return;
-    setError(null);
     setMode("accepting");
-    const signedIn = await authClient.signIn.email({ email: invitation.email, password });
+    const retry = retryAfterCapture();
+    const signedIn = await authClient.signIn.email({
+      email: invitation.email,
+      password,
+      fetchOptions: retry.fetchOptions,
+    });
+    if (signedIn.error?.status === 429) {
+      waitBeforeRetrying(retry.seconds() ?? DEFAULT_RETRY_SECONDS);
+      setMode("sign-in");
+      return;
+    }
     if (signedIn.error) {
-      setError(signedIn.error.message ?? "Those details were not recognised.");
+      showError(signedIn.error.message ?? "Those details were not recognised.");
       setMode("sign-in");
       return;
     }
     await accept();
+  }
+
+  if (lookupWait !== null) {
+    return (
+      <AuthShell title="Please wait a moment" description={rateLimitedMessage(lookupWait)}>
+        <Button
+          size="lg"
+          className={AUTH_PRIMARY}
+          disabled={cooldown.active}
+          onClick={() => window.location.reload()}
+        >
+          {cooldown.active ? tryAgainIn(cooldown.remaining) : "Try again"}
+        </Button>
+      </AuthShell>
+    );
   }
 
   if (problem) {
@@ -187,15 +261,17 @@ function AcceptInvite() {
             {mode === "sign-up" ? <FieldDescription>At least 12 characters.</FieldDescription> : null}
           </Field>
 
-          {error ? (
-            <Alert variant="destructive">
-              <AlertTitle>Not joined yet</AlertTitle>
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          ) : null}
-
-          <Button type="submit" size="lg" className={AUTH_PRIMARY} disabled={!password || (mode === "sign-up" && (!name || password.length < 12))}>
-            {mode === "sign-up" ? "Create account and join" : "Sign in and join"}
+          <Button
+            type="submit"
+            size="lg"
+            className={AUTH_PRIMARY}
+            disabled={cooldown.active || !password || (mode === "sign-up" && (!name || password.length < 12))}
+          >
+            {cooldown.active
+              ? tryAgainIn(cooldown.remaining)
+              : mode === "sign-up"
+                ? "Create account and join"
+                : "Sign in and join"}
           </Button>
         </FieldGroup>
       </form>

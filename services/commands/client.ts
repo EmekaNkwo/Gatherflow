@@ -1,7 +1,11 @@
 import { err, ok, type Result } from "@/lib/result";
 import type { LoadReport } from "@/services/repositories/collection";
 import type { ChurchSnapshot } from "@/types/snapshot";
-import type { EmailAvailability, SendEmailReceipt, SendEmailRequest } from "@/types/email";
+import type {
+  EmailAvailability,
+  SendEmailReceipt,
+  SendEmailRequest,
+} from "@/types/email";
 import type { InvitationDelivery } from "@/types/account";
 import type { DemoRole } from "@/types/team";
 import type { CommandInput, CommandName } from "./registry";
@@ -61,12 +65,17 @@ async function parse<T>(response: Response): Promise<Result<T>> {
   }
 
   if (!envelope.ok || envelope.data === undefined) {
-    return err(envelope.error ?? "The server refused that request.", envelope.code);
+    return err(
+      envelope.error ?? "The server refused that request.",
+      envelope.code,
+    );
   }
   return ok(envelope.data);
 }
 
-export async function fetchChurch(signal?: AbortSignal): Promise<Result<RemoteSnapshot>> {
+export async function fetchChurch(
+  signal?: AbortSignal,
+): Promise<Result<RemoteSnapshot>> {
   try {
     const response = await fetch("/api/church", {
       method: "GET",
@@ -81,20 +90,48 @@ export async function fetchChurch(signal?: AbortSignal): Promise<Result<RemoteSn
   }
 }
 
+/** How many times a request that never got an answer is sent again. */
+const COMMAND_RETRIES = 2;
+
+/** A fresh id for one intent: every retry of it reuses the same one. */
+export function newRequestId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+/**
+ * Sends a command. When the network drops the answer, the same request — with
+ * the same request id — is sent again; the server recognises the id and
+ * answers from the first attempt instead of doing the work twice.
+ */
 export async function postCommand<N extends CommandName>(
   name: N,
   input: CommandInput<N>,
+  requestId: string = newRequestId(),
 ): Promise<Result<RemoteCommandResult>> {
-  try {
-    const response = await fetch("/api/church/commands", {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({ name, input }),
-    });
-    return parse<RemoteCommandResult>(response);
-  } catch (error: unknown) {
-    return err(transportMessage(error), "transport");
+  let outcome: Result<RemoteCommandResult> = err(
+    "The request was not sent.",
+    "transport",
+  );
+  for (let attempt = 0; attempt <= COMMAND_RETRIES; attempt += 1) {
+    try {
+      const response = await fetch("/api/church/commands", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json",
+        },
+        body: JSON.stringify({ name, input, requestId }),
+      });
+      return parse<RemoteCommandResult>(response);
+    } catch (error: unknown) {
+      outcome = err(transportMessage(error), "transport");
+      // Cancelled on purpose: not something to try again.
+      if (error instanceof DOMException && error.name === "AbortError") return outcome;
+    }
   }
+  return outcome;
 }
 
 /**
@@ -102,11 +139,16 @@ export async function postCommand<N extends CommandName>(
  * cannot perform this at all, and the server needs more than a snapshot to
  * decide it (the suppression list, the provider configuration).
  */
-export async function postEmail(input: SendEmailRequest): Promise<Result<RemoteEmailResult>> {
+export async function postEmail(
+  input: SendEmailRequest,
+): Promise<Result<RemoteEmailResult>> {
   try {
     const response = await fetch("/api/church/email", {
       method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json" },
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+      },
       body: JSON.stringify(input),
     });
     return parse<RemoteEmailResult>(response);
@@ -117,12 +159,16 @@ export async function postEmail(input: SendEmailRequest): Promise<Result<RemoteE
 
 /** Signs the session out. The caller reloads so no church data lingers. */
 async function forgetPushSubscription(): Promise<void> {
-  if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
+  if (typeof navigator === "undefined" || !("serviceWorker" in navigator))
+    return;
   try {
     const registration = await navigator.serviceWorker.getRegistration("/");
     const subscription = await registration?.pushManager.getSubscription();
     if (!subscription) return;
-    await fetch(`/api/push?endpoint=${encodeURIComponent(subscription.endpoint)}`, { method: "DELETE" });
+    await fetch(
+      `/api/push?endpoint=${encodeURIComponent(subscription.endpoint)}`,
+      { method: "DELETE" },
+    );
     await subscription.unsubscribe();
   } catch {
     // Signing out must not fail because the browser's push state could not be read.
@@ -137,7 +183,10 @@ export async function postSignOut(): Promise<void> {
     // The church choice goes first, so the next person on this browser is
     // asked rather than handed the previous person's pick.
     await fetch("/api/churches/select", { method: "DELETE" });
-    await fetch("/api/auth/sign-out", { method: "POST", headers: { accept: "application/json" } });
+    await fetch("/api/auth/sign-out", {
+      method: "POST",
+      headers: { accept: "application/json" },
+    });
   } catch {
     // Nothing to do: the reload that follows will find no session either way.
   }
@@ -165,7 +214,9 @@ export interface RemoteEmailStatus {
 }
 
 /** The church's email status: whether sending is offered, and what gave up. */
-export async function fetchEmailStatus(signal?: AbortSignal): Promise<Result<RemoteEmailStatus>> {
+export async function fetchEmailStatus(
+  signal?: AbortSignal,
+): Promise<Result<RemoteEmailStatus>> {
   try {
     const response = await fetch("/api/church/email", {
       method: "GET",
@@ -191,7 +242,9 @@ export interface AuditEntry {
 }
 
 /** The server's record of who did what, for an administrator. */
-export async function fetchAudit(signal?: AbortSignal): Promise<Result<{ entries: AuditEntry[] }>> {
+export async function fetchAudit(
+  signal?: AbortSignal,
+): Promise<Result<{ entries: AuditEntry[] }>> {
   try {
     const response = await fetch("/api/church/audit", {
       method: "GET",
@@ -233,7 +286,11 @@ async function call<T>(url: string, init?: RequestInit): Promise<Result<T>> {
   try {
     const response = await fetch(url, {
       ...init,
-      headers: { accept: "application/json", "content-type": "application/json", ...(init?.headers ?? {}) },
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        ...(init?.headers ?? {}),
+      },
       cache: "no-store",
     });
     return parse<T>(response);
@@ -242,7 +299,8 @@ async function call<T>(url: string, init?: RequestInit): Promise<Result<T>> {
   }
 }
 
-export const fetchMembers = () => call<{ members: AccountMember[] }>("/api/church/members");
+export const fetchMembers = () =>
+  call<{ members: AccountMember[] }>("/api/church/members");
 
 export const setMemberRole = (userId: string, role: DemoRole) =>
   call<{ userId: string; role: DemoRole }>("/api/church/members", {
@@ -251,25 +309,46 @@ export const setMemberRole = (userId: string, role: DemoRole) =>
   });
 
 export const removeMember = (userId: string) =>
-  call<{ removed: boolean }>(`/api/church/members?userId=${encodeURIComponent(userId)}`, { method: "DELETE" });
-
-export const fetchInvitations = () => call<{ invitations: Invitation[] }>("/api/church/invitations");
-
-export const createInvitation = (input: { email: string; role: DemoRole; teamMemberId?: string }) =>
-  call<{ invitation: Invitation; link: string; delivery: InvitationDelivery }>("/api/church/invitations", {
-    method: "POST",
-    body: JSON.stringify(input),
+  call<{
+    removed: boolean;
+    teamMemberId: string | null;
+    openTasks: number;
+    notices: string[];
+  }>(`/api/church/members?userId=${encodeURIComponent(userId)}`, {
+    method: "DELETE",
   });
 
+export const fetchInvitations = () =>
+  call<{ invitations: Invitation[] }>("/api/church/invitations");
+
+export const createInvitation = (input: {
+  email: string;
+  role: DemoRole;
+  teamMemberId?: string;
+}) =>
+  call<{ invitation: Invitation; link: string; delivery: InvitationDelivery }>(
+    "/api/church/invitations",
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+
 /** Starts a change of address; the account moves once the new address confirms. */
-export const changeAccountEmail = (input: { newEmail: string; password: string }) =>
+export const changeAccountEmail = (input: {
+  newEmail: string;
+  password: string;
+}) =>
   call<{ pending: boolean; newEmail: string }>("/api/account/email", {
     method: "POST",
     body: JSON.stringify(input),
   });
 
 export const deleteAccount = (password: string) =>
-  call<{ deleted: boolean }>("/api/account/delete", { method: "POST", body: JSON.stringify({ password }) });
+  call<{ deleted: boolean }>("/api/account/delete", {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
 
 /** Whether this deployment can push reminders, and whether this browser is subscribed. */
 export const fetchPushStatus = (endpoint?: string) =>
@@ -278,10 +357,19 @@ export const fetchPushStatus = (endpoint?: string) =>
   );
 
 export const subscribePush = (subscription: PushSubscriptionJSON) =>
-  call<{ subscribed: boolean }>("/api/push", { method: "POST", body: JSON.stringify(subscription) });
+  call<{ subscribed: boolean }>("/api/push", {
+    method: "POST",
+    body: JSON.stringify(subscription),
+  });
 
 export const unsubscribePush = (endpoint: string) =>
-  call<{ subscribed: boolean }>(`/api/push?endpoint=${encodeURIComponent(endpoint)}`, { method: "DELETE" });
+  call<{ subscribed: boolean }>(
+    `/api/push?endpoint=${encodeURIComponent(endpoint)}`,
+    { method: "DELETE" },
+  );
 
 export const revokeInvitation = (id: string) =>
-  call<{ removed: boolean }>(`/api/church/invitations?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+  call<{ removed: boolean }>(
+    `/api/church/invitations?id=${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+  );

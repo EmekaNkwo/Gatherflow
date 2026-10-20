@@ -10,6 +10,8 @@ import type { HereEntry } from "./here-list";
 
 interface ServiceExtrasProps {
   canEdit: boolean;
+  /** The church whose welcome page the QR check-in opens. */
+  churchId?: string | null;
   initialNotes: string;
   removed: readonly HereEntry[];
   onImport: () => void;
@@ -24,6 +26,7 @@ interface ServiceExtrasProps {
  */
 export function ServiceExtras({
   canEdit,
+  churchId,
   initialNotes,
   removed,
   onImport,
@@ -48,10 +51,18 @@ export function ServiceExtras({
               <UploadIcon />
               Import a list
             </Button>
-            <LinkButton variant="outline" size="lg" href="/connect" target="_blank" className="rounded-full">
-              <QrCodeIcon />
-              QR check-in (demo)
-            </LinkButton>
+            {churchId ? (
+              <LinkButton
+                variant="outline"
+                size="lg"
+                href={`/connect/${churchId}`}
+                target="_blank"
+                className="rounded-full"
+              >
+                <QrCodeIcon />
+                QR check-in (demo)
+              </LinkButton>
+            ) : null}
           </div>
         ) : null}
 

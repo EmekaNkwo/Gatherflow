@@ -22,6 +22,8 @@ const ROLE_CAPABILITIES: Record<DemoRole, readonly Capability[]> = {
     "analytics.read",
     "settings.write",
     "exports.run",
+    "sessions.manage",
+    "templates.manage",
   ],
   pastor: [
     "people.read",
@@ -35,6 +37,8 @@ const ROLE_CAPABILITIES: Record<DemoRole, readonly Capability[]> = {
     "care.write",
     "communications.write",
     "analytics.read",
+    "sessions.manage",
+    "templates.manage",
   ],
   follow_up_coordinator: [
     "people.read",
@@ -48,6 +52,8 @@ const ROLE_CAPABILITIES: Record<DemoRole, readonly Capability[]> = {
     "communications.write",
     "analytics.read",
     "exports.run",
+    "sessions.manage",
+    "templates.manage",
   ],
   volunteer: [
     "people.read",

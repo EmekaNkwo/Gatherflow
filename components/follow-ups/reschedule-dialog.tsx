@@ -108,6 +108,7 @@ function RescheduleFields({
             className="h-11"
             value={reason}
             onChange={(event) => setReason(event.target.value)}
+            maxLength={500}
             placeholder="They asked for an evening call"
           />
           <FieldDescription>Helpful for whoever picks this up next.</FieldDescription>
@@ -121,7 +122,7 @@ function RescheduleFields({
           size="lg"
           className="flex-1"
           onClick={() => onConfirm(dueDate, reason.trim() || undefined)}
-          disabled={!dueDate}
+          disabled={!dueDate || dueDate < today}
         >
           Move it
         </Button>

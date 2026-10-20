@@ -1,6 +1,7 @@
 import { err, ok, type Result } from "@/lib/result";
 import { displayName } from "@/lib/strings";
 import type { GroupId, PersonId } from "@/types/common";
+import type { Person } from "@/types/person";
 import type { Group, GroupSchedule, GroupType } from "@/types/group";
 import type { ChurchSnapshot } from "@/types/snapshot";
 import type { CommandContext } from "../core/context";
@@ -14,6 +15,18 @@ import {
   withPerson,
 } from "../core/snapshot";
 import { advanceStage } from "../visitors/pipeline";
+import { activeGroupIds, isUnconnectedMember } from "./participation";
+
+/** Membership statuses that mean someone has left, so can't join a group. */
+const DEPARTED_STATUSES = ["transferred", "archived"] as const;
+
+/**
+ * True when a person can be added to a group: anyone still part of the
+ * church. Transferred and archived members have left.
+ */
+export function canJoinGroups(person: Pick<Person, "member">): boolean {
+  return !person.member || !(DEPARTED_STATUSES as readonly string[]).includes(person.member.status);
+}
 
 export interface CreateGroupInput {
   name: string;
@@ -103,15 +116,26 @@ export function addGroupMember(
 
   const person = findPerson(snapshot, personId);
   if (!person) return err("That person is no longer in the directory.", "not_found");
+  if (!canJoinGroups(person)) {
+    return err(
+      `${displayName(person)} has moved on from the church, so they can't be added to a group.`,
+      "inactive",
+    );
+  }
   if (group.members.some((member) => member.personId === personId)) {
     return err(`${displayName(person)} is already in ${group.name}.`, "duplicate");
   }
 
+  // A group has one leader: adding a new leader steps the current one down.
   let next = patch(snapshot, {
     groups: replaceById(snapshot.groups, groupId, (entry) => ({
       ...entry,
       members: [
-        ...entry.members,
+        ...entry.members.map((member) =>
+          role === "leader" && member.role === "leader"
+            ? { ...member, role: "member" as const }
+            : member,
+        ),
         { personId, joinedAt: ctx.nowIso, addedBy: ctx.actorId, role },
       ],
       leaderId: role === "leader" ? personId : entry.leaderId,
@@ -222,6 +246,9 @@ export function setGroupLeader(
   const person = findPerson(snapshot, personId);
   if (!person) return err("That person is no longer in the directory.", "not_found");
 
+  if (group.leaderId === personId) {
+    return err(`${displayName(person)} already leads ${group.name}.`, "unchanged");
+  }
   if (!group.members.some((member) => member.personId === personId)) {
     return addGroupMember(snapshot, groupId, personId, "leader", ctx);
   }
@@ -240,38 +267,61 @@ export function setGroupLeader(
     })),
   });
 
-  return ok(result(next, [], [`${displayName(person)} is now leading ${group.name}.`]));
+  return ok(
+    result(
+      withActivity(next, ctx, [
+        activity(ctx, {
+          type: "group.leader_changed",
+          category: "group",
+          personId,
+          summary: `${displayName(person)} is now leading ${group.name}.`,
+          meta: { groupId },
+        }),
+      ]),
+      [],
+      [`${displayName(person)} is now leading ${group.name}.`],
+    ),
+  );
 }
 
+/** Pauses or restarts a group, recording who did it on the timeline. */
 export function setGroupActive(
   snapshot: ChurchSnapshot,
   groupId: GroupId,
   active: boolean,
+  ctx: CommandContext,
 ): Result<CommandResult> {
   const group = snapshot.groups.find((entry) => entry.id === groupId);
   if (!group) return err("That group no longer exists.", "not_found");
+  if (group.active === active) {
+    return err(`${group.name} is already ${active ? "active" : "inactive"}.`, "unchanged");
+  }
+
+  const next = patch(snapshot, {
+    groups: replaceById(snapshot.groups, groupId, (entry) => ({ ...entry, active })),
+  });
 
   return ok(
     result(
-      patch(snapshot, {
-        groups: replaceById(snapshot.groups, groupId, (entry) => ({ ...entry, active })),
-      }),
+      withActivity(next, ctx, [
+        activity(ctx, {
+          type: "group.status_changed",
+          category: "group",
+          summary: `${group.name} was ${active ? "restarted" : "marked as not meeting"}.`,
+          meta: { groupId },
+        }),
+      ]),
       [],
       [`${group.name} marked as ${active ? "active" : "inactive"}.`],
     ),
   );
 }
 
-/** Members with no active group — the people most at risk of drifting. */
-export function peopleWithoutGroup(snapshot: ChurchSnapshot) {
-  const activeGroupIds = new Set(
-    snapshot.groups.filter((group) => group.active).map((group) => group.id),
-  );
-  return snapshot.people.filter(
-    (person) =>
-      person.kind === "member" &&
-      person.member?.status !== "archived" &&
-      person.member?.status !== "transferred" &&
-      !person.groupIds.some((id) => activeGroupIds.has(id)),
-  );
+/**
+ * Current members with no active group — the people most at risk of
+ * drifting. Same predicate as the Members filter and Reports.
+ */
+export function peopleWithoutGroup(snapshot: ChurchSnapshot): Person[] {
+  const activeIds = activeGroupIds(snapshot);
+  return snapshot.people.filter((person) => isUnconnectedMember(person, activeIds));
 }

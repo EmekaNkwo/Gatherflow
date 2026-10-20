@@ -33,19 +33,43 @@ describe("command input validation", () => {
     expect(parsed.ok).toBe(false);
     if (!parsed.ok) {
       expect(parsed.code).toBe(INVALID_INPUT);
-      expect(parsed.error).toContain("type");
+      expect(parsed.error).toBe("Type isn't one of the choices on offer.");
     }
   });
 
   it("refuses a missing required field and says which", () => {
     const parsed = parseCommandInput(createTaskInput, { type: "welcome_message" });
     expect(parsed.ok).toBe(false);
-    if (!parsed.ok) expect(parsed.error).toContain("personId");
+    if (!parsed.ok) expect(parsed.error).toBe("Person id is needed.");
   });
 
   it("refuses a body that is not an object at all", () => {
     for (const raw of [null, undefined, "welcome_message", 42, []]) {
       expect(parseCommandInput(createTaskInput, raw).ok).toBe(false);
     }
+  });
+
+  it("words a length limit in plain language, never the library's own text", () => {
+    const parsed = parseCommandInput(createTaskInput, {
+      personId: "person-1",
+      type: "welcome_message",
+      notes: "x".repeat(501),
+    });
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) {
+      expect(parsed.error).toBe("Notes is too long (500 characters at most).");
+      expect(parsed.error).not.toMatch(/expected|<=|string/);
+    }
+  });
+
+  it("words a number range and our own refinements in plain language", () => {
+    const schema = z.object({
+      dueInDays: z.number().int().min(0).max(60),
+      date: z.string().refine(() => false, "must be a real date"),
+    });
+    const tooBig = parseCommandInput(schema, { dueInDays: 100, date: "x" });
+    if (!tooBig.ok) expect(tooBig.error).toBe("Due in days must be 60 or less.");
+    const badDate = parseCommandInput(schema, { dueInDays: 1, date: "2026-02-31" });
+    if (!badDate.ok) expect(badDate.error).toBe("Date must be a real date.");
   });
 });

@@ -24,6 +24,43 @@ export function parseCommandInput<T>(
 
   // The first problem is the useful one; a list of fifteen is not actionable.
   const [issue] = parsed.error.issues;
-  const where = issue?.path.length ? `${issue.path.join(".")}: ` : "";
-  return err(`That request was not valid. ${where}${issue?.message ?? ""}`.trim(), INVALID_INPUT);
+  return err(describeIssue(issue), INVALID_INPUT);
+}
+
+/** "dueInDays" → "Due in days": the field as a person would name it. */
+function fieldLabel(path: readonly PropertyKey[]): string {
+  const last = [...path].reverse().find((part) => typeof part === "string");
+  if (typeof last !== "string") return "That value";
+  const words = last.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * A validation problem as a sentence somebody can act on — never the
+ * library's own wording, which names types and operators.
+ */
+export function describeIssue(issue: z.core.$ZodIssue | undefined): string {
+  if (!issue) return "Something in that request was not valid.";
+  const field = fieldLabel(issue.path);
+
+  switch (issue.code) {
+    case "too_big":
+      if (issue.origin === "string") return `${field} is too long (${String(issue.maximum)} characters at most).`;
+      if (issue.origin === "array") return `Too many chosen at once (${String(issue.maximum)} at most).`;
+      return `${field} must be ${String(issue.maximum)} or less.`;
+    case "too_small":
+      if (issue.origin === "string") return Number(issue.minimum) <= 1 ? `${field} is needed.` : `${field} is too short.`;
+      if (issue.origin === "array") return "Choose at least one.";
+      return `${field} must be ${String(issue.minimum)} or more.`;
+    case "invalid_value":
+      return `${field} isn't one of the choices on offer.`;
+    case "invalid_type":
+      return issue.input === undefined ? `${field} is needed.` : `${field} isn't valid.`;
+    case "custom":
+    case "invalid_format":
+      // Our own refinements carry a sentence already ("must be a real date").
+      return issue.message.startsWith("must") ? `${field} ${issue.message}.` : `${field} isn't valid.`;
+    default:
+      return `${field} isn't valid.`;
+  }
 }

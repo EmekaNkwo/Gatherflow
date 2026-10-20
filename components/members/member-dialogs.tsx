@@ -5,7 +5,7 @@ import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { SelectField } from "@/components/shared/select-field";
 import { DialogActions, DialogBody, ResponsiveDialog } from "@/components/people/responsive-dialog";
 import {
   MEMBERSHIP_STATUSES,
@@ -13,6 +13,7 @@ import {
   type MembershipStatus,
 } from "@/types/person";
 import type { Group } from "@/types/group";
+import { MEMBER_FIELD_LIMITS } from "./field-limits";
 
 interface StatusDialogProps {
   open: boolean;
@@ -92,6 +93,7 @@ function StatusFields({
             id="status-reason"
             value={reason}
             onChange={(event) => setReason(event.target.value)}
+            maxLength={MEMBER_FIELD_LIMITS.reason}
             placeholder="Moved to another church"
           />
           <FieldDescription>Kept on their record so the change can be explained.</FieldDescription>
@@ -153,26 +155,18 @@ function GroupFields({
   return (
     <>
       <DialogBody>
-        <Field>
-          <FieldLabel htmlFor="group-id">Group</FieldLabel>
-          <NativeSelect
-            className="w-full"
-            id="group-id"
-            value={groupId}
-            onChange={(event) => setGroupId(event.target.value)}
-          >
-            {groups.map((group) => (
-              <NativeSelectOption key={group.id} value={group.id}>
-                {group.name}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
-          {selected?.involvesMinors ? (
-            <FieldDescription>
-              This group works with under-18s, so who is in it is only shown to people allowed to see it.
-            </FieldDescription>
-          ) : null}
-        </Field>
+        <SelectField
+          id="group-id"
+          label="Group"
+          description={
+            selected?.involvesMinors
+              ? "This group works with under-18s, so who is in it is only shown to people allowed to see it."
+              : undefined
+          }
+          value={groupId}
+          onValueChange={setGroupId}
+          options={groups.map((group) => ({ value: group.id, label: group.name }))}
+        />
       </DialogBody>
       <DialogActions>
         <Button variant="ghost" size="lg" onClick={onCancel}>

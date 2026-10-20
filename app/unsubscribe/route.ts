@@ -108,7 +108,7 @@ function page(status: number, title: string, text: string, extra = ""): Response
   body { margin: 0; padding: 40px 16px; font-family: "Atkinson Hyperlegible Next", "Atkinson Hyperlegible", system-ui, sans-serif; font-size: 17px; line-height: 1.55; background: oklch(0.982 0.008 80); color: oklch(0.255 0.022 50); }
   main { max-width: 30rem; margin: 0 auto; background: oklch(0.955 0.03 70); border-radius: 2rem; padding: 32px 24px; }
   .mark { display: inline-flex; width: 40px; height: 40px; border-radius: 30%; align-items: center; justify-content: center; background: oklch(0.505 0.13 38); color: oklch(0.985 0.008 80); margin-bottom: 24px; }
-  h1 { font-family: Fraunces, ui-serif, Georgia, serif; font-weight: 500; font-size: 1.85rem; line-height: 1.15; margin: 0 0 12px; }
+  h1 { font-family: Nunito, ui-rounded, system-ui, sans-serif; font-weight: 750; font-size: 1.85rem; line-height: 1.15; margin: 0 0 12px; }
   p { margin: 0 0 24px; }
   .hint { margin: 16px 0 0; font-size: 0.9rem; color: oklch(0.47 0.022 55); }
   button { font: inherit; font-weight: 600; width: 100%; min-height: 48px; padding: 12px 24px; border-radius: 999px; border: 0; background: oklch(0.505 0.13 38); color: oklch(0.985 0.008 80); cursor: pointer; }

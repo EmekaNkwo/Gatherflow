@@ -1,6 +1,8 @@
+import { visitSummary } from "@/services/attendance/visits";
 import { formatDisplayDate } from "@/lib/dates";
 import { can } from "@/lib/permissions";
-import { displayName, normalise } from "@/lib/strings";
+import { foldForSearch, matchesPersonQuery } from "@/lib/person-search";
+import { displayName } from "@/lib/strings";
 import type { ChurchSnapshot } from "@/types/snapshot";
 import type { DemoRole } from "@/types/team";
 
@@ -34,8 +36,14 @@ export function globalSearch(
   query: string,
   options: SearchOptions,
 ): SearchResult[] {
-  const needle = normalise(query);
+  const needle = foldForSearch(query);
   if (needle.length < 2) return [];
+  // Tasks, groups and sessions use the same folding as people, so "eglise"
+  // finds "Église" everywhere and every word typed must appear.
+  const matches = (text: string) => {
+    const haystack = foldForSearch(text);
+    return needle.split(" ").every((word) => haystack.includes(word));
+  };
 
   const limit = options.limit ?? 20;
   const results: SearchResult[] = [];
@@ -43,17 +51,7 @@ export function globalSearch(
 
   if (canReadPeople) {
     for (const person of snapshot.people) {
-      const haystack = normalise(
-        [
-          person.firstName,
-          person.lastName,
-          person.preferredName ?? "",
-          person.phone ?? "",
-          person.email ?? "",
-          person.member?.reference ?? "",
-        ].join(" "),
-      );
-      if (!haystack.includes(needle)) continue;
+      if (!matchesPersonQuery(person, query)) continue;
 
       results.push(
         person.member
@@ -68,7 +66,7 @@ export function globalSearch(
               kind: "visitor",
               id: person.id,
               title: displayName(person),
-              subtitle: `Visitor · first visit ${formatDisplayDate(person.visitor?.firstVisitDate)}`,
+              subtitle: `Visitor · first visit ${formatDisplayDate(visitSummary(snapshot, person.id).firstVisitDate)}`,
               href: `/visitors/${person.id}`,
             },
       );
@@ -82,10 +80,8 @@ export function globalSearch(
     for (const task of snapshot.tasks) {
       if (!taskScopeAll && task.assigneeId !== options.teamMemberId) continue;
       const person = peopleById.get(task.personId);
-      const haystack = normalise(
-        [task.reference, task.notes ?? "", person ? displayName(person) : ""].join(" "),
-      );
-      if (!haystack.includes(needle)) continue;
+      const text = [task.reference, task.notes ?? "", person ? displayName(person) : ""].join(" ");
+      if (!matches(text)) continue;
 
       results.push({
         kind: "task",
@@ -98,7 +94,7 @@ export function globalSearch(
   }
 
   for (const group of snapshot.groups) {
-    if (!normalise(`${group.name} ${group.description}`).includes(needle)) continue;
+    if (!matches(`${group.name} ${group.description}`)) continue;
     results.push({
       kind: "group",
       id: group.id,
@@ -109,7 +105,7 @@ export function globalSearch(
   }
 
   for (const session of snapshot.sessions) {
-    if (!normalise(`${session.name} ${session.date}`).includes(needle)) continue;
+    if (!matches(`${session.name} ${session.date}`)) continue;
     results.push({
       kind: "session",
       id: session.id,

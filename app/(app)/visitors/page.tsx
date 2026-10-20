@@ -1,14 +1,14 @@
 "use client";
 
+import { WelcomeButton } from "@/components/visitors/welcome-button";
 import { useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { ChevronRightIcon, DownloadIcon, UserPlusIcon } from "lucide-react";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
-import { LinkButton } from "@/components/shared/link-button";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { SelectField } from "@/components/shared/select-field";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState, NoResultsState } from "@/components/shared/empty-state";
 import { PageHeader, PageShell } from "@/components/shared/page-header";
@@ -18,10 +18,10 @@ import {
   CloseFollowUpDialog,
   ContactPreferencesDialog,
 } from "@/components/visitors/visitor-dialogs";
-import { displayName } from "@/lib/strings";
+import { displayName, pluralise } from "@/lib/strings";
 import { useRole } from "@/hooks/useRole";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { useVisitors } from "@/hooks/useVisitors";
+import { useVisitorActionGate, useVisitors } from "@/hooks/useVisitors";
 import {
   VISITOR_FILTER_LABELS,
   type VisitorFilter,
@@ -37,6 +37,13 @@ const SHORT_LABELS: Partial<Record<VisitorFilter, string>> = {
   awaiting_assignment: "Nobody assigned",
   overdue: "Follow-up late",
 };
+const MORE_VIEW_OPTIONS = [
+  { value: "", label: "More…" },
+  ...FILTERS.filter((option) => !MAIN_FILTERS.includes(option)).map((option) => ({
+    value: option,
+    label: VISITOR_FILTER_LABELS[option],
+  })),
+];
 
 /**
  * Visitors: the people who have come recently. Four common views up front,
@@ -59,6 +66,7 @@ export default function VisitorsPage() {
   const [preferences, setPreferences] = useState<VisitorRow | null>(null);
 
   const { assignableTeam, can } = useRole();
+  const allows = useVisitorActionGate();
   const isMobile = useIsMobile();
   const {
     rows,
@@ -67,6 +75,7 @@ export default function VisitorsPage() {
     bulkAssign,
     bulkCreateTasks,
     stopFollowUp,
+    reopenFollowUp,
     updateContactPreferences,
     exportCsv,
   } = useVisitors(
@@ -82,7 +91,8 @@ export default function VisitorsPage() {
     ),
   );
 
-  const canEdit = can("visitors.write");
+  const canBulkAssign = can("tasks.assign");
+  const canBulkCreate = can("tasks.write") && can("tasks.read.all");
   const selectedRows = rows.filter((row) => selected.has(row.person.id));
 
   const toggle = (personId: string) => {
@@ -94,10 +104,18 @@ export default function VisitorsPage() {
     });
   };
 
-  const toggleAll = () => {
-    setSelected((previous) =>
-      previous.size === rows.length ? new Set() : new Set(rows.map((row) => row.person.id)),
-    );
+  // Only the page in view: selecting rows nobody can see would make a bulk
+  // action reach people the person never looked at.
+  const toggleAll = (pageIds: readonly string[]) => {
+    setSelected((previous) => {
+      const allOnPage = pageIds.every((personId) => previous.has(personId));
+      const next = new Set(previous);
+      for (const personId of pageIds) {
+        if (allOnPage) next.delete(personId);
+        else next.add(personId);
+      }
+      return next;
+    });
   };
 
   const clearFilters = () => {
@@ -110,11 +128,7 @@ export default function VisitorsPage() {
     <PageShell>
       <PageHeader
         title="Visitors"
-        description={
-          counts.awaitingAssignment
-            ? `${counts.total} people · ${counts.awaitingAssignment} still need somebody to say hello`
-            : `${counts.total} people`
-        }
+        description={visitorsSummary(counts)}
         actions={
           <>
             {can("exports.run") && !isMobile ? (
@@ -123,12 +137,10 @@ export default function VisitorsPage() {
                 Export
               </Button>
             ) : null}
-            {canEdit ? (
-              <LinkButton className="gap-1.5 rounded-full" href="/visitors/quick">
-                <UserPlusIcon />
-                Welcome someone new
-              </LinkButton>
-            ) : null}
+            <WelcomeButton className="gap-1.5 rounded-full">
+              <UserPlusIcon />
+              Welcome someone new
+            </WelcomeButton>
           </>
         }
       />
@@ -145,45 +157,44 @@ export default function VisitorsPage() {
             {SHORT_LABELS[option]}
           </Button>
         ))}
-        <NativeSelect
+        <SelectField
           aria-label="More views"
           value={MAIN_FILTERS.includes(filter) ? "" : filter}
-          onChange={(event) => setFilter((event.target.value || "all") as VisitorFilter)}
-          className={cn("h-10 rounded-full", !MAIN_FILTERS.includes(filter) && "border-primary")}
-        >
-          <NativeSelectOption value="">More…</NativeSelectOption>
-          {FILTERS.filter((option) => !MAIN_FILTERS.includes(option)).map((option) => (
-            <NativeSelectOption key={option} value={option}>
-              {VISITOR_FILTER_LABELS[option]}
-            </NativeSelectOption>
-          ))}
-        </NativeSelect>
+          onValueChange={(value) => setFilter((value || "all") as VisitorFilter)}
+          triggerClassName={cn("w-fit rounded-full", !MAIN_FILTERS.includes(filter) && "border-primary")}
+          options={MORE_VIEW_OPTIONS}
+        />
       </div>
 
-      {selectedRows.length && canEdit ? (
+      {selectedRows.length && (canBulkAssign || canBulkCreate) ? (
         <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-muted/40 p-3">
           <Badge variant="secondary">{selectedRows.length} selected</Badge>
-          <Button size="sm" variant="outline" onClick={() => setAssigning("bulk")}>
-            Assign to a volunteer
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => {
-              bulkCreateTasks(
-                selectedRows.map((row) => row.person.id),
-                { type: "welcome_message", notes: "Bulk welcome follow-up." },
-              );
-              setSelected(new Set());
-            }}
-          >
-            Create welcome tasks
-          </Button>
+          {canBulkAssign ? (
+            <Button size="sm" variant="outline" onClick={() => setAssigning("bulk")}>
+              Assign to a volunteer
+            </Button>
+          ) : null}
+          {canBulkCreate ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                bulkCreateTasks(
+                  selectedRows.map((row) => row.person.id),
+                  { type: "welcome_message", notes: "Bulk welcome follow-up." },
+                );
+                setSelected(new Set());
+              }}
+            >
+              Create welcome tasks
+            </Button>
+          ) : null}
           <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
             Clear selection
           </Button>
           <p className="text-xs text-muted-foreground">
-            People who opted out are skipped automatically.
+            Anyone who can&apos;t be included (opted out, follow-up stopped, or no permission to contact) is skipped,
+            and named afterwards.
           </p>
         </div>
       ) : null}
@@ -223,7 +234,16 @@ export default function VisitorsPage() {
               ))}
             </ul>
           ) : (
-            <p className="rounded-2xl bg-muted px-5 py-6 text-muted-foreground">Nobody matches this view.</p>
+            search || filter !== "all" || assigneeFilter ? (
+              <p className="rounded-2xl bg-muted px-5 py-6 text-muted-foreground">Nobody matches this view.</p>
+            ) : (
+              <EmptyState
+                icon={UserPlusIcon}
+                title="No visitors yet"
+                description="Welcome the first person after a service, or put the welcome page's QR code where people will see it."
+                action={<WelcomeButton size="sm">Welcome someone new</WelcomeButton>}
+              />
+            )
           )}
         </div>
       ) : (
@@ -235,7 +255,8 @@ export default function VisitorsPage() {
         onAssign={(row) => setAssigning(row)}
         onStopFollowUp={(row) => setClosing(row)}
         onPreferences={(row) => setPreferences(row)}
-        canEdit={canEdit}
+        onReopen={(row) => void reopenFollowUp(row.person.id)}
+        allows={(action, row) => allows(action, row.person)}
         toolbar={
           <>
             <Input
@@ -245,19 +266,17 @@ export default function VisitorsPage() {
               className="w-full sm:w-64"
               aria-label="Search visitors"
             />
-            <NativeSelect
+            <SelectField
               value={assigneeFilter}
-              onChange={(event) => setAssigneeFilter(event.target.value)}
+              onValueChange={setAssigneeFilter}
               aria-label="Filter by assigned volunteer"
-            >
-              <NativeSelectOption value="">Anyone assigned</NativeSelectOption>
-              <NativeSelectOption value="unassigned">Unassigned</NativeSelectOption>
-              {assignableTeam.map((member) => (
-                <NativeSelectOption key={member.id} value={member.id}>
-                  {member.name}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
+              triggerClassName="sm:w-fit"
+              options={[
+                { value: "", label: "Anyone assigned" },
+                { value: "unassigned", label: "Unassigned" },
+                ...assignableTeam.map((member) => ({ value: member.id, label: member.name })),
+              ]}
+            />
           </>
         }
         emptyState={
@@ -276,9 +295,7 @@ export default function VisitorsPage() {
               title="No visitors yet"
               description="Welcome the first person after a service, or put the welcome page's QR code where people will see it."
               action={
-                <LinkButton size="sm" href="/visitors/quick">
-                  Welcome someone new
-                </LinkButton>
+                <WelcomeButton size="sm">Welcome someone new</WelcomeButton>
               }
             />
           )
@@ -333,4 +350,18 @@ export default function VisitorsPage() {
       ) : null}
     </PageShell>
   );
+}
+
+/**
+ * "27 people · 3 became members · 8 still need somebody to say hello".
+ * People who became members stay listed (labelled), so the count says so.
+ */
+function visitorsSummary(counts: { total: number; becameMembers: number; awaitingAssignment: number }): string {
+  return [
+    `${counts.total} ${pluralise(counts.total, "person", "people")}`,
+    counts.becameMembers ? `${counts.becameMembers} became ${counts.becameMembers === 1 ? "a member" : "members"}` : null,
+    counts.awaitingAssignment ? `${counts.awaitingAssignment} still ${counts.awaitingAssignment === 1 ? "needs" : "need"} somebody to say hello` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }

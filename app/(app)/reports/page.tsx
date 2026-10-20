@@ -10,15 +10,16 @@ import {
   type ChartConfig,
 } from "@/components/ui/chart";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Field, FieldLabel } from "@/components/ui/field";
 import { AttendanceChart } from "@/components/dashboard/attendance-chart";
 import { PageHeader, PageShell, Section } from "@/components/shared/page-header";
+import { SelectField, type SelectOption } from "@/components/shared/select-field";
 import { RestrictedState } from "@/components/shared/empty-state";
 import { addDaysIso, formatDisplayDate, toIsoDate } from "@/lib/dates";
 import { SERVICE_TYPES, SERVICE_TYPE_LABELS, type ServiceType } from "@/types/attendance";
 import { DEMO_ROLE_LABELS } from "@/types/team";
 import type { Ratio } from "@/types/common";
+import { customRangeProblem } from "@/services/analytics/report-range";
 import { useChurchAnalytics } from "@/hooks/useChurchAnalytics";
 import { useRole } from "@/hooks/useRole";
 import { useNow } from "@/hooks/use-now";
@@ -34,6 +35,11 @@ const PERIODS = [
   { id: "365", label: "A year", days: 365 },
   { id: "custom", label: "Choose dates", days: 0 },
 ] as const;
+
+const SERVICE_OPTIONS: SelectOption[] = [
+  { value: "", label: "All services" },
+  ...SERVICE_TYPES.map((type) => ({ value: type, label: SERVICE_TYPE_LABELS[type] })),
+];
 
 type PeriodId = (typeof PERIODS)[number]["id"];
 
@@ -60,8 +66,15 @@ export default function ReportsPage() {
   const isMobile = useIsMobile();
 
   const [period, setPeriod] = useState<PeriodId>("90");
+  // The range the report uses, and what is typed into the custom date boxes.
+  // A half-typed or back-to-front range stays in the boxes with a note, and
+  // the report keeps showing the last range that made sense.
   const [from, setFrom] = useState(() => addDaysIso(today, -90));
   const [to, setTo] = useState(() => today);
+  const [draft, setDraft] = useState<{ from: string; to: string }>(() => ({
+    from: addDaysIso(today, -90),
+    to: today,
+  }));
   const [serviceType, setServiceType] = useState<ServiceType | "">("");
 
   const analytics = useChurchAnalytics(
@@ -89,12 +102,24 @@ export default function ReportsPage() {
     if (preset && preset.days > 0) {
       setFrom(addDaysIso(today, -preset.days));
       setTo(today);
+      setDraft({ from: addDaysIso(today, -preset.days), to: today });
+    }
+  };
+
+  const rangeProblem = customRangeProblem(draft.from, draft.to);
+  const chooseDates = (next: { from: string; to: string }) => {
+    setDraft(next);
+    if (!customRangeProblem(next.from, next.to)) {
+      setFrom(next.from);
+      setTo(next.to);
     }
   };
 
   const journey = analytics.journey;
   const findings = buildFindings(analytics);
-  const rangeText = `${formatDisplayDate(journey.range.from)} to ${formatDisplayDate(journey.range.to)}`;
+  const fromText = formatDisplayDate(journey.range.from);
+  const toText = formatDisplayDate(journey.range.to);
+  const rangeText = `${fromText} to ${toText}`;
 
   return (
     <PageShell className="max-w-4xl space-y-10">
@@ -121,15 +146,40 @@ export default function ReportsPage() {
           ))}
         </div>
         {period === "custom" ? (
-          <div className="flex flex-wrap items-end gap-3">
-            <Field className="w-44">
-              <FieldLabel htmlFor="report-from">From</FieldLabel>
-              <Input id="report-from" type="date" className="h-11" value={from} onChange={(event) => setFrom(event.target.value)} />
-            </Field>
-            <Field className="w-44">
-              <FieldLabel htmlFor="report-to">To</FieldLabel>
-              <Input id="report-to" type="date" className="h-11" value={to} onChange={(event) => setTo(event.target.value)} />
-            </Field>
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-end gap-3">
+              <Field className="w-44" data-invalid={rangeProblem ? true : undefined}>
+                <FieldLabel htmlFor="report-from">From</FieldLabel>
+                <Input
+                  id="report-from"
+                  type="date"
+                  className="h-11"
+                  value={draft.from}
+                  max={draft.to || undefined}
+                  aria-invalid={rangeProblem ? true : undefined}
+                  aria-describedby={rangeProblem ? "report-range-problem" : undefined}
+                  onChange={(event) => chooseDates({ ...draft, from: event.target.value })}
+                />
+              </Field>
+              <Field className="w-44" data-invalid={rangeProblem ? true : undefined}>
+                <FieldLabel htmlFor="report-to">To</FieldLabel>
+                <Input
+                  id="report-to"
+                  type="date"
+                  className="h-11"
+                  value={draft.to}
+                  min={draft.from || undefined}
+                  aria-invalid={rangeProblem ? true : undefined}
+                  aria-describedby={rangeProblem ? "report-range-problem" : undefined}
+                  onChange={(event) => chooseDates({ ...draft, to: event.target.value })}
+                />
+              </Field>
+            </div>
+            {rangeProblem ? (
+              <p id="report-range-problem" role="alert" className="text-sm text-destructive">
+                {rangeProblem} Still showing {rangeText}.
+              </p>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -147,22 +197,16 @@ export default function ReportsPage() {
 
       <Section
         title="Weekly attendance"
-        description={`The last 12 weeks. A week with no service shows as zero.`}
+        description="The last 12 completed weeks, counting different people each week. A week with no service shows as zero."
         actions={
-          <NativeSelect
+          <SelectField
             id="report-service"
             aria-label="Which services"
-            className="min-h-11"
+            className="w-auto"
             value={serviceType}
-            onChange={(event) => setServiceType(event.target.value as ServiceType | "")}
-          >
-            <NativeSelectOption value="">All services</NativeSelectOption>
-            {SERVICE_TYPES.map((type) => (
-              <NativeSelectOption key={type} value={type}>
-                {SERVICE_TYPE_LABELS[type]}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
+            onValueChange={(value) => setServiceType(value as ServiceType | "")}
+            options={SERVICE_OPTIONS}
+          />
         }
       >
         <div className="rounded-3xl border bg-card p-5">
@@ -186,7 +230,7 @@ export default function ReportsPage() {
 
       <Section
         title="From first visit to belonging"
-        description={`Out of the ${plural(journey.cohortSize, "person", "people")} whose first visit was between ${rangeText}.`}
+        description={`Out of the ${plural(journey.cohortSize, "person", "people")} whose first visit was between ${fromText} and ${toText}.`}
       >
         <ul className="divide-y overflow-hidden rounded-3xl border bg-card">
           {[
@@ -298,7 +342,7 @@ function buildFindings(analytics: ReturnType<typeof useChurchAnalytics>): string
 
   if (weeklyAverage.weeksCounted > 0) {
     findings.push(
-      `About ${Math.round(weeklyAverage.average)} people come on a usual week, averaged over the last ${plural(weeklyAverage.weeksCounted, "week", "weeks")} with a service.`,
+      `About ${plural(Math.round(weeklyAverage.average), "person comes", "people come")} on a usual week, averaged over the last ${plural(weeklyAverage.weeksCounted, "completed week", "completed weeks")} with a service. Somebody at two services in one week counts once.`,
     );
   }
 

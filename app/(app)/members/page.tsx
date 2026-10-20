@@ -1,21 +1,23 @@
 "use client";
 
+import { AddMemberButton } from "@/components/members/add-member-button";
 import { useMemo, useState, type ReactNode } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { ChevronRightIcon, DownloadIcon, SlidersHorizontalIcon, UserPlusIcon } from "lucide-react";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
-import { LinkButton } from "@/components/shared/link-button";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { EmptyState, NoResultsState } from "@/components/shared/empty-state";
 import { OptedOutBadge } from "@/components/shared/badges";
 import { PageHeader, PageShell } from "@/components/shared/page-header";
+import { SelectField, type SelectOption } from "@/components/shared/select-field";
 import { MemberTable } from "@/components/members/member-table";
 import { AddToGroupDialog, MembershipStatusDialog } from "@/components/members/member-dialogs";
 import { displayName } from "@/lib/strings";
 import { MEMBER_FILTER_LABELS, type MemberFilter, type MemberRow } from "@/services/members/selectors";
+import { CURRENT_MEMBER_STATUSES } from "@/services/groups/participation";
+import { commandFor } from "@/services/commands/registry";
 import { useRole } from "@/hooks/useRole";
 import { useGroups } from "@/hooks/useGroups";
 import { useMembers } from "@/hooks/useMembers";
@@ -25,6 +27,14 @@ import { useSnapshot } from "@/hooks/use-church-data";
 const FILTERS = Object.keys(MEMBER_FILTER_LABELS) as MemberFilter[];
 /** The views people reach for; the rest are one tap away in "More". */
 const MAIN_FILTERS: readonly MemberFilter[] = ["all", "new", "needs_review", "no_group"];
+/** The "More…" select lists every view that isn't a main pill. */
+const MORE_VIEW_OPTIONS: SelectOption[] = [
+  { value: "", label: "More…" },
+  ...FILTERS.filter((option) => !MAIN_FILTERS.includes(option)).map((option) => ({
+    value: option,
+    label: MEMBER_FILTER_LABELS[option],
+  })),
+];
 const SHORT_LABELS: Partial<Record<MemberFilter, string>> = {
   all: "Everyone",
   new: "New",
@@ -64,13 +74,17 @@ export default function MembersPage() {
     ),
   );
 
-  const canEdit = can("people.write");
+  // Gated by the commands the row actions send, exactly as the server checks them.
+  const canChangeStatus = can(commandFor("member.changeStatus").capability);
+  const canAddToGroup = can(commandFor("group.addMember").capability);
   const canExport = can("exports.run");
   const filtersApplied = Boolean(search || groupId || filter !== "all");
   const criteria = snapshot.settings.engagement;
 
+  // One definition of "a member" for the header and the Everyone list:
+  // current members (transferred and archived sit under "More…").
   const memberCount = breakdown
-    .filter((entry) => entry.status !== "archived" && entry.status !== "transferred")
+    .filter((entry) => CURRENT_MEMBER_STATUSES.includes(entry.status))
     .reduce((sum, entry) => sum + entry.count, 0);
   const description =
     participation.percentage === null
@@ -114,12 +128,10 @@ export default function MembersPage() {
         actions={
           <>
             {isMobile ? null : exportButton}
-            {canEdit ? (
-              <LinkButton href="/members/new" className="min-h-11 gap-1.5 rounded-full">
-                <UserPlusIcon />
-                Add a member
-              </LinkButton>
-            ) : null}
+            <AddMemberButton className="min-h-11 gap-1.5 rounded-full">
+              <UserPlusIcon />
+              Add a member
+            </AddMemberButton>
           </>
         }
       />
@@ -156,36 +168,27 @@ export default function MembersPage() {
               {SHORT_LABELS[option]}
             </Button>
           ))}
-          <NativeSelect
+          <SelectField
             aria-label="More views"
             value={MAIN_FILTERS.includes(filter) ? "" : filter}
-            onChange={(event) => setFilter((event.target.value || "all") as MemberFilter)}
-            className={cn("h-11 rounded-full sm:h-10", !MAIN_FILTERS.includes(filter) && "border-primary")}
-          >
-            <NativeSelectOption value="">More…</NativeSelectOption>
-            {FILTERS.filter((option) => !MAIN_FILTERS.includes(option)).map((option) => (
-              <NativeSelectOption key={option} value={option}>
-                {MEMBER_FILTER_LABELS[option]}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
+            onValueChange={(value) => setFilter((value || "all") as MemberFilter)}
+            triggerClassName={cn("w-auto rounded-full", !MAIN_FILTERS.includes(filter) && "border-primary")}
+            options={MORE_VIEW_OPTIONS}
+          />
         </div>
 
         {moreFilters ? (
           <div className="flex flex-wrap items-center gap-2">
-            <NativeSelect
+            <SelectField
               value={groupId}
-              onChange={(event) => setGroupId(event.target.value)}
+              onValueChange={setGroupId}
               aria-label="Filter by group"
-              className="h-11 rounded-full"
-            >
-              <NativeSelectOption value="">Any group</NativeSelectOption>
-              {groups.map((entry) => (
-                <NativeSelectOption key={entry.group.id} value={entry.group.id}>
-                  {entry.group.name}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
+              triggerClassName="w-auto rounded-full"
+              options={[
+                { value: "", label: "Any group" },
+                ...groups.map((entry) => ({ value: entry.group.id, label: entry.group.name })),
+              ]}
+            />
             {isMobile ? exportButton : null}
           </div>
         ) : null}
@@ -203,7 +206,8 @@ export default function MembersPage() {
       ) : (
         <MemberTable
           rows={rows}
-          canEdit={canEdit}
+          canChangeStatus={canChangeStatus}
+          canAddToGroup={canAddToGroup}
           onChangeStatus={setStatusFor}
           onAddToGroup={setGroupFor}
           emptyState={emptyState}
@@ -241,7 +245,7 @@ function memberHint(row: MemberRow): string {
     return `Not seen for ${row.weeksSinceAttendance} weeks`;
   }
   if (row.person.member?.requestedContact) return "Asked to be contacted";
-  if (row.groupNames.length) return row.groupNames.join(", ");
+  if (row.inActiveGroup) return row.groupNames.join(", ");
   return "Not in a group yet";
 }
 

@@ -1,14 +1,15 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { PlusIcon, SlidersHorizontalIcon } from "lucide-react";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { EmptyState, NoResultsState } from "@/components/shared/empty-state";
+import { SelectField } from "@/components/shared/select-field";
 import { PageHeader, PageShell, Section } from "@/components/shared/page-header";
 import { MessageComposer } from "@/components/communications/message-composer";
+import { CancelTaskDialog } from "./cancel-task-dialog";
 import { CompleteTaskDialog } from "./complete-task-dialog";
 import { CreateTaskDialog, type NewTaskValues } from "./create-task-dialog";
 import { RescheduleDialog } from "./reschedule-dialog";
@@ -25,10 +26,27 @@ import {
 } from "@/types/follow-up";
 import type { TaskFilters, TaskWithPerson } from "@/services/follow-ups/selectors";
 import { useRole } from "@/hooks/useRole";
-import { useFollowUps } from "@/hooks/useFollowUps";
+import { useFollowUps, useTaskActionGate } from "@/hooks/useFollowUps";
 import { useNow } from "@/hooks/use-now";
 import { useSnapshot } from "@/hooks/use-church-data";
 import { useIsMobile } from "@/hooks/use-mobile";
+
+const FILTER_TRIGGER_CLASS = "w-fit rounded-full";
+
+const TASK_TYPE_FILTER_OPTIONS = [
+  { value: "", label: "Any kind" },
+  ...(Object.keys(FOLLOW_UP_TASK_TYPE_LABELS) as FollowUpTaskType[]).map((option) => ({
+    value: option,
+    label: FOLLOW_UP_TASK_TYPE_LABELS[option],
+  })),
+];
+
+const DUE_FILTER_OPTIONS = [
+  { value: "all", label: "Any day" },
+  { value: "overdue", label: "Still waiting" },
+  { value: "today", label: "Today" },
+  { value: "upcoming", label: "Coming up" },
+];
 
 interface TasksViewProps {
   title: string;
@@ -45,7 +63,16 @@ interface TasksViewProps {
    * phone.
    */
   layout?: "cards" | "table";
+  /** Shown above the list, e.g. "Showing one follow-up · Show all". */
+  notice?: ReactNode;
 }
+
+/**
+ * Refusals that mean the task changed under us (finished elsewhere, gone):
+ * the church is re-read, and keeping the dialog open would only invite a
+ * second refusal.
+ */
+const STALE_CODES = new Set(["closed", "not_found"]);
 
 const OPEN_STATUSES: readonly TaskStatus[] = ["pending", "in_progress", "rescheduled"];
 const FINISHED_STATUSES: readonly TaskStatus[] = ["completed", "cancelled"];
@@ -65,6 +92,7 @@ export function TasksView({
   emptyTitle,
   emptyDescription,
   layout = "table",
+  notice,
 }: TasksViewProps) {
   const isMobile = useIsMobile();
   const asCards = layout === "cards" || isMobile;
@@ -73,6 +101,7 @@ export function TasksView({
   const today = toIsoDate(now);
   const snapshot = useSnapshot();
   const { assignableTeam, can, teamMemberId } = useRole();
+  const allows = useTaskActionGate();
 
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<TaskStatus | "">("");
@@ -87,6 +116,7 @@ export function TasksView({
   const [assigning, setAssigning] = useState<TaskWithPerson | null>(null);
   const [messaging, setMessaging] = useState<TaskWithPerson | null>(null);
   const [creating, setCreating] = useState(false);
+  const [cancelling, setCancelling] = useState<TaskWithPerson | null>(null);
 
   const filters = useMemo<TaskFilters>(
     () => ({
@@ -102,7 +132,7 @@ export function TasksView({
     [baseFilters, search, status, type, assignee, due, lockDue, show],
   );
 
-  const { tasks, create, complete, reschedule, assign, cancel } = useFollowUps(filters);
+  const { tasks, create, complete, reschedule, assign, cancel, scope } = useFollowUps(filters);
   const canEdit = can("tasks.write");
   const filtersApplied = Boolean(search || status || type || assignee || (!lockDue && due !== "all"));
 
@@ -177,57 +207,45 @@ export function TasksView({
       </div>
       {moreFilters ? (
         <div className="flex flex-wrap gap-2">
-          <NativeSelect
+          <SelectField
             value={status}
-            onChange={(event) => setStatus(event.target.value as TaskStatus | "")}
+            onValueChange={(value) => setStatus(value as TaskStatus | "")}
             aria-label="Filter by status"
-          >
-            <NativeSelectOption value="">Any status</NativeSelectOption>
-            {statusOptions.map((option) => (
-              <NativeSelectOption key={option} value={option}>
-                {TASK_STATUS_LABELS[option]}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
-          <NativeSelect
+            triggerClassName={FILTER_TRIGGER_CLASS}
+            options={[
+              { value: "", label: "Any status" },
+              ...statusOptions.map((option) => ({ value: option, label: TASK_STATUS_LABELS[option] })),
+            ]}
+          />
+          <SelectField
             value={type}
-            onChange={(event) => setType(event.target.value as FollowUpTaskType | "")}
+            onValueChange={(value) => setType(value as FollowUpTaskType | "")}
             aria-label="Filter by kind of follow-up"
-          >
-            <NativeSelectOption value="">Any kind</NativeSelectOption>
-            {(Object.keys(FOLLOW_UP_TASK_TYPE_LABELS) as FollowUpTaskType[]).map((option) => (
-              <NativeSelectOption key={option} value={option}>
-                {FOLLOW_UP_TASK_TYPE_LABELS[option]}
-              </NativeSelectOption>
-            ))}
-          </NativeSelect>
+            triggerClassName={FILTER_TRIGGER_CLASS}
+            options={TASK_TYPE_FILTER_OPTIONS}
+          />
           {!lockDue ? (
-            <NativeSelect
+            <SelectField
               value={due}
-              onChange={(event) => setDue(event.target.value as TaskFilters["due"] & string)}
+              onValueChange={(value) => setDue(value as TaskFilters["due"] & string)}
               aria-label="Filter by when it is due"
-            >
-              <NativeSelectOption value="all">Any day</NativeSelectOption>
-              <NativeSelectOption value="overdue">Still waiting</NativeSelectOption>
-              <NativeSelectOption value="today">Today</NativeSelectOption>
-              <NativeSelectOption value="upcoming">Coming up</NativeSelectOption>
-            </NativeSelect>
+              triggerClassName={FILTER_TRIGGER_CLASS}
+              options={DUE_FILTER_OPTIONS}
+            />
           ) : null}
           {can("tasks.read.all") && !baseFilters.assigneeId ? (
-            <NativeSelect
+            <SelectField
               value={assignee}
-              onChange={(event) => setAssignee(event.target.value)}
+              onValueChange={setAssignee}
               aria-label="Filter by who it is for"
-            >
-              <NativeSelectOption value="">Anyone</NativeSelectOption>
-              <NativeSelectOption value="unassigned">Nobody yet</NativeSelectOption>
-              {teamMemberId ? <NativeSelectOption value={teamMemberId}>Me</NativeSelectOption> : null}
-              {assignableTeam.map((member) => (
-                <NativeSelectOption key={member.id} value={member.id}>
-                  {member.name}
-                </NativeSelectOption>
-              ))}
-            </NativeSelect>
+              triggerClassName={FILTER_TRIGGER_CLASS}
+              options={[
+                { value: "", label: "Anyone" },
+                { value: "unassigned", label: "No owner (or no longer active)" },
+                ...(teamMemberId ? [{ value: teamMemberId, label: "Me" }] : []),
+                ...assignableTeam.map((member) => ({ value: member.id, label: member.name })),
+              ]}
+            />
           ) : null}
         </div>
       ) : null}
@@ -264,6 +282,7 @@ export function TasksView({
 
       {asCards ? (
         <div className="space-y-8">
+          {notice}
           {toolbar}
           {groups.length === 0 ? emptyState : null}
           {groups.map((group) =>
@@ -274,11 +293,12 @@ export function TasksView({
                   now={now}
                   emptyMessage=""
                   showAssignee={can("tasks.read.all")}
-                  onComplete={canEdit ? setCompleting : undefined}
-                  onReschedule={canEdit ? setRescheduling : undefined}
+                  allows={allows}
+                  onComplete={setCompleting}
+                  onReschedule={setRescheduling}
                   onMessage={setMessaging}
-                  onAssign={can("tasks.assign") ? setAssigning : undefined}
-                  onCancel={canEdit && can("tasks.assign") ? (row) => cancel(row.task.id) : undefined}
+                  onAssign={setAssigning}
+                  onCancel={setCancelling}
                 />
               </Section>
             ) : (
@@ -293,18 +313,21 @@ export function TasksView({
           )}
         </div>
       ) : (
-        <TaskTable
-          rows={tasks}
-          now={now}
-          canEdit={canEdit}
-          onComplete={setCompleting}
-          onReschedule={setRescheduling}
-          onAssign={setAssigning}
-          onMessage={setMessaging}
-          onCancel={(row) => cancel(row.task.id)}
-          toolbar={toolbar}
-          emptyState={emptyState}
-        />
+        <div className="space-y-4">
+          {notice}
+          <TaskTable
+            rows={tasks}
+            now={now}
+            allows={allows}
+            onComplete={setCompleting}
+            onReschedule={setRescheduling}
+            onAssign={setAssigning}
+            onMessage={setMessaging}
+            onCancel={setCancelling}
+            toolbar={toolbar}
+            emptyState={emptyState}
+          />
+        </div>
       )}
 
       <CompleteTaskDialog
@@ -312,9 +335,10 @@ export function TasksView({
         onOpenChange={(open) => !open && setCompleting(null)}
         onConfirm={async (outcome, note) => {
           if (!completing) return;
-          // Stays open on a refusal, so the outcome chosen is not lost.
+          // Stays open on a refusal, so the outcome chosen is not lost —
+          // unless the task itself changed elsewhere, when the list refreshes.
           const result = await complete(completing.task.id, outcome, note);
-          if (result.ok) setCompleting(null);
+          if (result.ok || STALE_CODES.has(result.code ?? "")) setCompleting(null);
         }}
       />
 
@@ -325,6 +349,16 @@ export function TasksView({
         onConfirm={(dueDate, reason) => {
           if (rescheduling) reschedule(rescheduling.task.id, dueDate, reason);
           setRescheduling(null);
+        }}
+      />
+
+      <CancelTaskDialog
+        task={cancelling}
+        onOpenChange={(open) => !open && setCancelling(null)}
+        onConfirm={async (reason) => {
+          if (!cancelling) return;
+          const result = await cancel(cancelling.task.id, reason);
+          if (result.ok || STALE_CODES.has(result.code ?? "")) setCancelling(null);
         }}
       />
 
@@ -352,6 +386,8 @@ export function TasksView({
         team={assignableTeam}
         today={today}
         defaultDueInDays={snapshot.settings.defaultFollowUpDueInDays}
+        currentMemberId={teamMemberId ?? undefined}
+        ownOnly={scope === "own"}
         onConfirm={async (values: NewTaskValues) => {
           const outcome = await create(values);
           if (outcome.ok) setCreating(false);

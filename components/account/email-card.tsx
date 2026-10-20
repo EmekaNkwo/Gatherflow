@@ -19,7 +19,6 @@ interface EmailCardProps {
 export function EmailCard({ currentEmail }: EmailCardProps) {
   const [newEmail, setNewEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [pending, setPending] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -31,7 +30,12 @@ export function EmailCard({ currentEmail }: EmailCardProps) {
       toast.error(outcome.error);
       return;
     }
-    setPending(outcome.value.newEmail);
+    // Long enough to read: it says what happens next.
+    toast.success(`Check ${outcome.value.newEmail} for a link`, {
+      description:
+        "Open it to confirm the change. Until then you keep signing in with your current address. If nothing arrives within a few minutes, try again.",
+      duration: 15_000,
+    });
     setNewEmail("");
     setPassword("");
   }
@@ -62,12 +66,6 @@ export function EmailCard({ currentEmail }: EmailCardProps) {
             <Button type="submit" size="lg" className="w-fit rounded-full" disabled={submitting || !newEmail || !password}>
               {submitting ? "Sending…" : "Change address"}
             </Button>
-            {pending ? (
-              <p role="status" className="text-sm text-muted-foreground">
-                Check {pending} for a link to confirm the change. Until then you keep signing in with your current
-                address. If nothing arrives within a few minutes, try again.
-              </p>
-            ) : null}
           </FieldGroup>
         </form>
       </div>

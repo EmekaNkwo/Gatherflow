@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useMemo } from "react";
-import { capabilitiesFor } from "@/lib/permissions";
+import { capabilitiesFor, taskScope } from "@/lib/permissions";
+import { commandFor, type CommandInput, type CommandName } from "@/services/commands/registry";
 import type { Capability } from "@/types/team";
 import { useSessionStore } from "@/stores/session-store";
 import { useSnapshot } from "./use-church-data";
@@ -32,6 +33,22 @@ export function useRole() {
     [capabilities],
   );
 
+  /**
+   * Whether this exact request would be allowed: the command's capability,
+   * and — for a role scoped to its own work — that it concerns their own
+   * work. The same two checks the server makes, so a control is offered
+   * exactly when the server would accept it.
+   */
+  const canRun = useCallback(
+    <N extends CommandName>(name: N, input: CommandInput<N>) => {
+      const definition = commandFor(name);
+      if (!capabilities.includes(definition.capability)) return false;
+      if (!definition.ownedBy || taskScope(role) === "all") return true;
+      return Boolean(teamMemberId) && definition.ownedBy(snapshot, input, teamMemberId as string);
+    },
+    [capabilities, role, teamMemberId, snapshot],
+  );
+
   const assignableTeam = useMemo(
     () => snapshot.team.filter((member) => member.active && member.role !== "member"),
     [snapshot.team],
@@ -44,6 +61,7 @@ export function useRole() {
     capabilities,
     can,
     canAll,
+    canRun,
     assignableTeam,
     team: snapshot.team,
   };

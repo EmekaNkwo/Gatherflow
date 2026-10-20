@@ -6,6 +6,7 @@ import { eq as equals } from "drizzle-orm";
 import { createPostgresSnapshotRepository } from "@/server/db/snapshot-repository";
 import { createSeedSnapshot } from "@/data/seed";
 import { REMOTE_E2E } from "../playwright.config";
+import { choose, optionNames } from "./select";
 
 /**
  * The whole email path, over HTTP, in the server-backed mode.
@@ -142,12 +143,13 @@ test("queues an email from the composer and the worker hands it to the provider"
 
   // Templates are listed alphabetically and not all of them suit email;
   // pick the first one that does, as a person would.
-  const templates = await page.locator("#composer-template option").allTextContents();
-  for (const name of templates) {
-    await page.selectOption("#composer-template", { label: name });
-    if (await page.locator('#composer-channel option[value="email"]').count()) break;
+  const template = page.locator("#composer-template");
+  const channel = page.locator("#composer-channel");
+  for (const name of await optionNames(page, template)) {
+    await choose(page, template, name);
+    if ((await optionNames(page, channel)).includes("Email")) break;
   }
-  await page.selectOption("#composer-channel", "email");
+  await choose(page, channel, "Email");
   // The real thing is on offer: no "Simulated" badge anywhere in the dialog.
   await expect(dialog.getByText("Simulated", { exact: true })).toHaveCount(0);
   await page.fill("#composer-subject", "Lovely to meet you on Sunday");
@@ -308,6 +310,7 @@ test("asks which church to open once the account belongs to two, and keeps an au
   await page.waitForURL("/dashboard");
   await page.goto("/settings");
   await page.getByRole("tab", { name: "Audit" }).click();
-  await expect(page.getByText("email.send")).toBeVisible();
-  await expect(page.getByText("email.unsubscribe_link")).toBeVisible();
+  // The trail reads in words, not action codes.
+  await expect(page.getByText("Sent an email").first()).toBeVisible();
+  await expect(page.getByText("Someone unsubscribed by link").first()).toBeVisible();
 });

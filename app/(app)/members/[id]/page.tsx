@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { ArrowRightIcon, PlusIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { LinkButton } from "@/components/shared/link-button";
@@ -14,6 +14,7 @@ import { CompleteTaskDialog } from "@/components/follow-ups/complete-task-dialog
 import { RescheduleDialog } from "@/components/follow-ups/reschedule-dialog";
 import { TaskList } from "@/components/follow-ups/task-list";
 import { AddToGroupDialog, MembershipStatusDialog } from "@/components/members/member-dialogs";
+import { EditMemberDialog } from "@/components/members/edit-member-dialog";
 import { JourneyTimeline } from "@/components/people/journey-timeline";
 import { Chip, PersonHero, type PersonMenuItem } from "@/components/people/person-hero";
 import {
@@ -30,6 +31,7 @@ import { CONTACT_METHOD_LABELS } from "@/types/common";
 import { MEMBERSHIP_STATUS_LABELS } from "@/types/person";
 import type { TaskWithPerson } from "@/services/follow-ups/selectors";
 import { attendanceHabit } from "@/services/analytics/attendance";
+import { canJoinGroups } from "@/services/groups/groups";
 import { useRole } from "@/hooks/useRole";
 import { useFollowUps, usePersonTasks } from "@/hooks/useFollowUps";
 import { useGroups } from "@/hooks/useGroups";
@@ -50,6 +52,7 @@ export default function MemberProfilePage() {
   const params = useParams<{ id: string }>();
   const personId = params.id;
   const now = useNow();
+  const router = useRouter();
 
   const snapshot = useSnapshot();
   const person = usePerson(personId);
@@ -60,8 +63,8 @@ export default function MemberProfilePage() {
   const communications = usePersonCommunications(personId);
   const careRecords = usePersonCareRecords(personId);
 
-  const { can } = useRole();
-  const { changeStatus, completeOrientation, markRequestedContact, remove } = useMembers();
+  const { can, canRun } = useRole();
+  const { changeStatus, completeOrientation, correct, markRequestedContact, remove } = useMembers();
   const { addMember } = useGroups();
   const { complete, reschedule } = useFollowUps();
 
@@ -69,6 +72,7 @@ export default function MemberProfilePage() {
   const [statusOpen, setStatusOpen] = useState(false);
   const [groupOpen, setGroupOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [completing, setCompleting] = useState<TaskWithPerson | null>(null);
   const [rescheduling, setRescheduling] = useState<TaskWithPerson | null>(null);
 
@@ -89,26 +93,52 @@ export default function MemberProfilePage() {
   }
 
   const member = person.member;
-  const canEdit = can("people.write");
+  // Each control is offered exactly when the server would accept its command.
+  const canChangeStatus = canRun("member.changeStatus", { personId: person.id, status: member.status });
+  const canCorrect = canRun("person.correct", { personId: person.id, changes: {} });
+  const canDelete = canRun("person.delete", { personId: person.id });
+  const canNoteOrientation = canRun("member.recordOrientationCompleted", { personId: person.id });
+  const canMarkContact = canRun("member.setRequestedContact", { personId: person.id, requested: true });
+  const canAddToGroup =
+    canJoinGroups(person) &&
+    canRun("group.addMember", { groupId: snapshot.groups[0]?.id ?? "", personId: person.id });
+  const orientationRecorded = snapshot.activity.some(
+    (entry) => entry.personId === person.id && entry.type === "membership.orientation_completed",
+  );
   const habit = attendanceHabit(snapshot, person, now);
   const groupNames = row?.groupNames ?? [];
+  const pausedGroups = new Set(row?.inactiveGroupNames ?? []);
   const name = displayName(person);
   const firstName = name.split(" ")[0];
   const open = tasks.filter((entry) => entry.task.status !== "completed" && entry.task.status !== "cancelled");
   const finished = tasks.filter((entry) => entry.task.status === "completed" || entry.task.status === "cancelled");
 
-  const menu: PersonMenuItem[] = canEdit
-    ? [
-        { label: "Change membership", onSelect: () => setStatusOpen(true) },
-        { label: "Add to a group", onSelect: () => setGroupOpen(true) },
-        { label: "Note that orientation is done", onSelect: () => completeOrientation(person.id) },
-        {
-          label: member.requestedContact ? "They no longer need a call" : "They asked to be contacted",
-          onSelect: () => markRequestedContact(person.id, !member.requestedContact),
-        },
-        { label: "Delete their record", onSelect: () => setDeleting(true), destructive: true },
-      ]
-    : [];
+  const menu: PersonMenuItem[] = [
+    ...(canCorrect ? [{ label: "Edit details", onSelect: () => setEditing(true) }] : []),
+    ...(canChangeStatus ? [{ label: "Change membership", onSelect: () => setStatusOpen(true) }] : []),
+    ...(canAddToGroup ? [{ label: "Add to a group", onSelect: () => setGroupOpen(true) }] : []),
+    ...(canNoteOrientation && !orientationRecorded
+      ? [{ label: "Note that orientation is done", onSelect: () => void completeOrientation(person.id) }]
+      : []),
+    ...(canMarkContact
+      ? [
+          {
+            label: member.requestedContact ? "They no longer need a call" : "They asked to be contacted",
+            onSelect: () => void markRequestedContact(person.id, !member.requestedContact),
+          },
+        ]
+      : []),
+    ...(canDelete ? [{ label: "Delete their record", onSelect: () => setDeleting(true), destructive: true }] : []),
+  ];
+
+  /**
+   * After a delete, this page has nothing left to show, so go back to the
+   * list. The same when the server says the record has already gone.
+   */
+  const deleteRecord = async () => {
+    const outcome = await remove(person.id, "Deletion requested");
+    if (outcome.ok || outcome.code === "not_found") router.replace("/members");
+  };
 
   return (
     <PageShell className="max-w-4xl space-y-10">
@@ -161,12 +191,15 @@ export default function MemberProfilePage() {
                 groupNames.map((group) => (
                   <span key={group} className="rounded-full bg-muted px-3 py-1 text-sm font-medium">
                     {group}
+                    {pausedGroups.has(group) ? (
+                      <span className="font-normal text-muted-foreground"> · not meeting</span>
+                    ) : null}
                   </span>
                 ))
               ) : (
                 <span className="text-muted-foreground">Not in a group yet.</span>
               )}
-              {canEdit ? (
+              {canAddToGroup ? (
                 <Button variant="ghost" size="lg" className="rounded-full" onClick={() => setGroupOpen(true)}>
                   <PlusIcon />
                   Add to a group
@@ -179,7 +212,7 @@ export default function MemberProfilePage() {
               <p className="text-sm">
                 {row.reviewReason} Nothing has been changed; it&apos;s worth checking in.
               </p>
-              {canEdit ? (
+              {canChangeStatus ? (
                 <Button variant="outline" size="lg" className="rounded-full bg-background" onClick={() => setStatusOpen(true)}>
                   Change membership
                 </Button>
@@ -239,7 +272,7 @@ export default function MemberProfilePage() {
                     ? `Happy to hear from us, prefers ${CONTACT_METHOD_LABELS[person.contact.preferredMethod].toLowerCase()}`
                     : "Hasn't agreed to be contacted",
               },
-              { label: "Household", value: row?.householdName },
+              { label: "Household", value: row?.householdName ?? "Not part of a household yet" },
               { label: "Usual service", value: member.preferredServiceType?.replace(/_/g, " ") },
               {
                 label: "First visited",
@@ -248,6 +281,11 @@ export default function MemberProfilePage() {
               { label: "Member number", value: member.reference },
             ]}
           />
+          {canCorrect ? (
+            <Button variant="outline" size="lg" className="mt-3 rounded-full" onClick={() => setEditing(true)}>
+              Edit details
+            </Button>
+          ) : null}
         </Disclosure>
 
         {member.emergencyContact && can("care.read") ? (
@@ -268,6 +306,13 @@ export default function MemberProfilePage() {
       </div>
 
       <MessageComposer person={composing ? person : null} onOpenChange={(open) => !open && setComposing(false)} />
+
+      <EditMemberDialog
+        person={editing ? person : null}
+        households={snapshot.households}
+        onOpenChange={setEditing}
+        onSave={async (changes) => (await correct(person.id, changes)).ok}
+      />
 
       <MembershipStatusDialog
         open={statusOpen}
@@ -314,10 +359,10 @@ export default function MemberProfilePage() {
         open={deleting}
         onOpenChange={setDeleting}
         title={`Delete ${firstName}'s record?`}
-        description="Everything about them goes: their visits, follow-ups, messages and timeline. Only an anonymous note that something was deleted is kept. This can't be undone."
+        description="Everything about them goes: their visits (so past headcounts drop by one), follow-ups, messages and timeline. They leave every group they're in, and stop being anyone's household contact. Only an anonymous note that something was deleted is kept. This can't be undone."
         confirmLabel="Delete for good"
         destructive
-        onConfirm={() => remove(person.id, "Deletion requested")}
+        onConfirm={() => void deleteRecord()}
       />
     </PageShell>
   );
