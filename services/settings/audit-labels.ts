@@ -49,6 +49,7 @@ const ACTION_LABELS: Record<string, string> = {
   "group.setLeader": "Changed a group leader",
   "group.setActive": "Opened or paused a group",
   "communication.log": "Recorded a message",
+  "communication.logMany": "Recorded a message to several people",
   "template.create": "Added a message template",
   "template.update": "Changed a message template",
   "template.delete": "Deleted a message template",

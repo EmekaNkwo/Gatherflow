@@ -7,6 +7,7 @@ import { useParams } from "next/navigation";
 import {
   ChevronRightIcon,
   EllipsisIcon,
+  MailIcon,
   ShieldIcon,
   UserPlusIcon,
   XIcon,
@@ -21,6 +22,7 @@ import {
 import { LinkButton } from "@/components/shared/link-button";
 import { Input } from "@/components/ui/input";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
+import { GroupEmailDialog } from "@/components/communications/group-email-dialog";
 import { EmptyState } from "@/components/shared/empty-state";
 import { OptedOutBadge } from "@/components/shared/badges";
 import { PageHeader, PageShell, Section } from "@/components/shared/page-header";
@@ -52,9 +54,11 @@ export default function GroupPage() {
   const [adding, setAdding] = useState(false);
   const [search, setSearch] = useState("");
   const [removing, setRemoving] = useState<{ personId: string; name: string } | null>(null);
+  const [emailing, setEmailing] = useState<string[] | null>(null);
 
   // Gated by the commands these controls send, as the server checks them.
   const canEdit = canRun("group.addMember", { groupId, personId: "" });
+  const canEmail = can("communications.write");
 
   /**
    * People who could join: not already in it, still part of the church
@@ -142,17 +146,30 @@ export default function GroupPage() {
             </p>
           ) : null}
         </div>
-        {canEdit && group.active ? (
-          <Button
-            size="lg"
-            className="h-12 shrink-0 gap-2 rounded-full px-6 text-base"
-            aria-expanded={adding}
-            onClick={() => setAdding((open) => !open)}
-          >
-            {adding ? <XIcon /> : <UserPlusIcon />}
-            {adding ? "Done adding" : "Add someone"}
-          </Button>
-        ) : null}
+        <div className="flex shrink-0 flex-wrap gap-2">
+          {canEmail && members.length ? (
+            <Button
+              size="lg"
+              variant="outline"
+              className="h-12 gap-2 rounded-full px-6 text-base"
+              onClick={() => setEmailing(members.flatMap(({ person }) => (person ? [person.id] : [])))}
+            >
+              <MailIcon />
+              Email the group
+            </Button>
+          ) : null}
+          {canEdit && group.active ? (
+            <Button
+              size="lg"
+              className="h-12 gap-2 rounded-full px-6 text-base"
+              aria-expanded={adding}
+              onClick={() => setAdding((open) => !open)}
+            >
+              {adding ? <XIcon /> : <UserPlusIcon />}
+              {adding ? "Done adding" : "Add someone"}
+            </Button>
+          ) : null}
+        </div>
       </section>
 
       {canEdit && adding && group.active ? (
@@ -271,6 +288,12 @@ export default function GroupPage() {
       <Section title="Meetings">
         <GroupAttendance groupId={group.id} canRecord={can("attendance.write")} />
       </Section>
+
+      <GroupEmailDialog
+        personIds={emailing}
+        groupName={group.name}
+        onOpenChange={(open) => !open && setEmailing(null)}
+      />
 
       <ConfirmDialog
         open={removing !== null}

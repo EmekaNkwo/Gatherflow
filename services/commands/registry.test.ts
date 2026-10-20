@@ -188,6 +188,7 @@ describe("command registry", () => {
       "group.setLeader",
       "group.setActive",
       "communication.log",
+      "communication.logMany",
       "template.create",
       "template.update",
       "template.delete",

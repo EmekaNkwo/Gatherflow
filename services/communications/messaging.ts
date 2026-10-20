@@ -161,6 +161,7 @@ const LOGGED_NOTICE: Partial<Record<CommunicationStatus, string>> = {
   drafted: "Draft saved",
   copied: "Copied",
   opened_external: "Opened in your messaging app",
+  sent_external: "Recorded as sent",
 };
 
 /**

@@ -188,6 +188,7 @@ const STATUS_RANK: Record<CommunicationLogEntry["status"], number> = {
   drafted: 0,
   copied: 0,
   opened_external: 0,
+  sent_external: 0,
   queued: 0,
   sent: 1,
   delivered: 2,

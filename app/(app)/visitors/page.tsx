@@ -4,7 +4,7 @@ import { WelcomeButton } from "@/components/visitors/welcome-button";
 import { useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { ChevronRightIcon, DownloadIcon, UserPlusIcon } from "lucide-react";
+import { ChevronRightIcon, DownloadIcon, MailIcon, UserPlusIcon } from "lucide-react";
 import { cn } from "cn";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState, NoResultsState } from "@/components/shared/empty-state";
 import { PageHeader, PageShell } from "@/components/shared/page-header";
 import { VisitorTable } from "@/components/visitors/visitor-table";
+import { GroupEmailDialog } from "@/components/communications/group-email-dialog";
 import {
   AssignDialog,
   CloseFollowUpDialog,
@@ -64,6 +65,7 @@ export default function VisitorsPage() {
   const [assigning, setAssigning] = useState<VisitorRow | "bulk" | null>(null);
   const [closing, setClosing] = useState<VisitorRow | null>(null);
   const [preferences, setPreferences] = useState<VisitorRow | null>(null);
+  const [emailing, setEmailing] = useState<string[] | null>(null);
 
   const { assignableTeam, can } = useRole();
   const allows = useVisitorActionGate();
@@ -93,6 +95,7 @@ export default function VisitorsPage() {
 
   const canBulkAssign = can("tasks.assign");
   const canBulkCreate = can("tasks.write") && can("tasks.read.all");
+  const canEmail = can("communications.write");
   const selectedRows = rows.filter((row) => selected.has(row.person.id));
 
   const toggle = (personId: string) => {
@@ -166,9 +169,20 @@ export default function VisitorsPage() {
         />
       </div>
 
-      {selectedRows.length && (canBulkAssign || canBulkCreate) ? (
+      {selectedRows.length && (canBulkAssign || canBulkCreate || canEmail) ? (
         <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-muted/40 p-3">
           <Badge variant="secondary">{selectedRows.length} selected</Badge>
+          {canEmail ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              onClick={() => setEmailing(selectedRows.map((row) => row.person.id))}
+            >
+              <MailIcon />
+              Email them
+            </Button>
+          ) : null}
           {canBulkAssign ? (
             <Button size="sm" variant="outline" onClick={() => setAssigning("bulk")}>
               Assign to a volunteer
@@ -321,6 +335,8 @@ export default function VisitorsPage() {
           setAssigning(null);
         }}
       />
+
+      <GroupEmailDialog personIds={emailing} onOpenChange={(open) => !open && setEmailing(null)} />
 
       <CloseFollowUpDialog
         open={closing !== null}

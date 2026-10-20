@@ -278,6 +278,27 @@ the church id exists.
 
 ---
 
+### Emailing several people from your own email app
+
+The default way to email a group needs no provider and no setup. Select visitors
+(**Email them**) or open a group (**Email the group**), pick a template, and the
+email opens in the sender's own email app, ready to send from their own address.
+Two ways, because one email can only say one name:
+
+- **A personal email to each.** Every placeholder is filled per person (`{{firstName}}`,
+  their first-visit date…), and each email is opened with one tap. A detail nobody's record
+  has is typed once and goes into every email.
+- **One email to everyone.** Every address goes in BCC, so nobody sees the others.
+  `{{firstName}}` becomes "everyone", and the sender sees the exact text first. Some mail
+  apps cut off `mailto:` links past about 2,000 characters, so a long list is split into
+  several emails; a message too long for any link is copied instead.
+
+People who opted out, never gave permission or have no usable address are left out before
+anything opens, and named with the reason. Nothing is recorded when the email app opens.
+The record (`sent_external`, "Sent from your own email") is written only when the sender
+confirms they sent it, one entry per recipient (`communication.logMany`). Logic lives in
+`services/communications/group-email.ts`.
+
 ### Sending email
 
 > **Off until switched on.** With no Mailjet credentials the composer drafts, copies and hands
