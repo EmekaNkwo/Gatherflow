@@ -386,9 +386,12 @@ curl -XPOST -H "authorization: Bearer $CRON_SECRET" localhost:3100/api/cron/drai
 curl -H "authorization: Bearer $CRON_SECRET" localhost:3100/api/email/health   # 503 when a human is needed
 ```
 
-The drain is scheduled by the host, not by the application: `vercel.json` declares it as a
-Vercel cron, `.github/workflows/drain-outbox.yml` runs it from GitHub Actions for any other host
-once two secrets are set, and the runbook covers a platform cron that just `curl`s.
+The drain is scheduled by the host, not by the application. `vercel.json` runs it once a day
+(06:00 UTC), the most Vercel's Hobby plan allows, which is enough to prune old rate-limit and
+webhook rows. For prompt email, `.github/workflows/drain-outbox.yml` runs it every five minutes
+from GitHub Actions once two secrets are set, on Vercel or any other host. On a paid Vercel plan
+you can instead set the `vercel.json` schedule back to `*/5 * * * *`. The runbook also covers a
+platform cron that just `curl`s.
 
 | Table | Holds |
 | --- | --- |
@@ -509,8 +512,9 @@ refuses to run against a database that is not on localhost.
 - **Email has not been through a real pilot.** Everything up to the provider is tested against
   a stub; the runbook's pilot step is what confirms the live account, the DNS and the webhook
   together, and the production gate stays shut until it has been done.
-- **Vercel's Hobby plan runs crons daily at most.** The five-minute drain in `vercel.json` needs
-  a paid plan there; the GitHub Actions workflow covers any host.
+- **Vercel's Hobby plan runs crons daily at most.** `vercel.json` therefore drains the outbox
+  once a day; with Mailjet switched on, set up the GitHub Actions workflow (or a paid plan) so
+  queued email goes out within minutes.
 - **Backups and residency are the deployment's job.** The operator endpoint produces a backup;
   where it goes, how it is encrypted, how often it is taken and in which jurisdiction the
   database lives are decisions the application does not make.
